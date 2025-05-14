@@ -1,0 +1,385 @@
+
+# Matrix-valued Functional Data -------------------------------------------
+
+create_matrix_funcdata_grid = function(X, t_grid) {
+  # validate t
+  stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
+  
+  # validate X
+  if (!is(X, "Tensor"))
+    stop("X has to be an {rTensor} tensor")
+  stopifnot(length(dim(X)) == 4L)
+  stopifnot(dim(X)[4] == length(t_grid))
+  
+  # formulate object
+  obj = list(X = X, t_grid = t_grid, vdim = dim(X)[2:3])
+  class(obj) <- c("matfdata", "matfdata.grid")
+  return(obj)
+}
+
+create_matrix_funcdata_irreg = function(
+    X_list, t_list=NULL, t_grid=NULL, t_idx_list=NULL) {
+  # validate time points
+  t_idx_obj = make_t_idx_list(t_list, t_grid, t_idx_list)
+  t_grid = t_idx_obj$t_grid
+  t_idx_list = t_idx_obj$t_idx_list
+  nt = length(t_grid)
+  ms = sapply(t_idx_list, length)
+  
+  # validate X
+  # X can be
+  # (1) a list of {rTensor} tensors
+  # (2) a vector of paths to RDS files, each stores an rTensor for one subject
+  in_mem = TRUE # flag for whether X are read into the list
+  if (is.list(X_list)) {
+    if (!all(sapply(X_list, function(x) is(x, "Tensor"))))
+      stop("Each X_list[[i]] has to be an {rTensor} tensor")
+    if (!all(sapply(X_list, function(x) length(dim(x))) == 3L))
+      stop("Each X_list[[i]] has to be a 3d")
+    p = dim(X_list[[1]])[1]
+    q = dim(X_list[[1]])[2]
+    if (!all(ms == sapply(X_list, function(x) dim(x)[3])))
+      stop("Not all t_idx_list[[i]] and X_list[[i]] have matched length.")
+  } else if (is.vector(X_list) && is.character(X_list)) {
+    X1 = readRDS(X_list[1])
+    if (!is(X1, "Tensor"))
+      stop("Each X_list[[i]] has to be an {rTensor} tensor")
+    if (!length(dim(X1)) == 3L)
+      stop("Each X_list[[i]] has to be a 3d")
+    p = dim(X1[[1]])[1]
+    q = dim(X1[[1]])[2]
+    in_mem = FALSE
+  } else stop("X_list has to be a list")
+  
+  # formulate object
+  obj = list(
+    X_list = X_list,
+    t_grid = t_grid,
+    t_idx_list = t_idx_list,
+    vdim = c(p, q),
+    in_mem = in_mem
+  )
+  class(obj) <- c("matfdata", "matfdata.irreg")
+  return(obj)
+}
+
+# TODO: complete this
+make_t_idx_list = function(
+    t_list=NULL, t_grid=NULL, t_idx_list=NULL, max_nt=101) {
+  if (is.null(t_list)) {
+    if (is.null(t_grid) || is.null(t_idx_list)) {
+      stop("Both t_grid and t_idx_list cannot be NULL if t_list is NULL.")
+    }
+    if (!is.vector(t_grid) || is.unsorted(t_grid)) {
+      stop("t_grid is not a vector or is not sorted.")
+    }
+    nt = length(t_grid)
+    if (!is.list(t_idx_list)) stop("t_idx_list is not a list.")
+    if (!all(is.integer(unlist(t_idx_list))))
+      stop("All elements in t_idx_list have to be integers.")
+    if (any(unlist(t_idx_list) > nt | unlist(t_idx_list) < 1))
+      stop("All elements in t_idx_list have to be in [1,length(t_grid)].")
+  } else {
+    stop("NOT IMPLEMENTED")
+  }
+  return(list(t_grid = t_grid,
+    t_idx_list = t_idx_list))
+}
+
+get_t_list <- function(data) {
+  stopifnot(is(data, "matfdata.irreg"))
+  lapply(data$t_idx_list, \(idx) data$t_grid[idx])
+}
+
+
+# Count, Retrieve, Subset Subjects ------------------------------------------------
+
+count_subj = function(data) UseMethod("count_subj")
+
+count_subj.matfdata.grid = function(data) return(dim(data$X)[1])
+count_subj.matfdata.irreg = function(data) return(length(data$X_list))
+
+subset_subj = function(data, i) UseMethod("subset_subj")
+
+subset_subj.matfdata.grid = function(data, i) {
+  i = as.integer(as.vector(i))
+  create_matrix_funcdata_grid(
+    X = data$X[i,,drop=FALSE],
+    t_grid = data$t_grid)
+}
+
+subset_subj.matfdata.irreg = function(
+  data, i, force_in_mem = FALSE) {
+  i = as.integer(as.vector(i))
+  if ((!data$in_mem) && force_in_mem) {
+    X_list = lapply(data$X_list[i], get_subj_tnsr.matfdata.irreg)
+  } else {
+    X_list = data$X_list[i]
+  }
+  create_matrix_funcdata_irreg(
+    X_list = X_list,
+    t_grid = data$t_grid,
+    t_idx_list = data$t_idx_list[i])
+}
+
+get_subj_tnsr = function(data, i) UseMethod("get_subj_tnsr")
+
+get_subj_tnsr.matfdata.grid = function(data, i) {
+  i = as.integer(i)
+  stopifnot(length(i) == 1)
+  shape = dim(data$X)[2:length(dim(data$X))]
+  return(data$X[i,] |> structure(dim=shape))
+}
+
+get_subj_tnsr.matfdata.irreg = function(data, i, shape_check=TRUE) {
+  i = as.integer(i)
+  stopifnot(length(i) == 1)
+  if (data$in_mem) {
+    return(data$X_list[[i]])
+  } else {
+    X_i = readRDS(data$X_list[[i]])
+    if (shape_check) {
+      # shape check when reading the data
+      stopifnot(length(dim(X_i)==3))
+      stopifnot(dim(X_i)[1] == data$vdim[1])
+      stopifnot(dim(X_i)[2] == data$vdim[2])
+    }
+    return(X_i)
+  }
+}
+
+# Cov. and Eigen. of Matrix-valued FuncData -----------------------------------
+
+create_matrix_covfunc = function(U, V, K, t_grid) {
+  # validate t
+  stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
+  
+  # validate U, V, K
+  # stopifnot(isSymmetric(U))
+  # stopifnot(isSymmetric(V))
+  # stopifnot(isSymmetric(K))
+  stopifnot(nrow(K) == length(t_grid))
+  
+  # formulate object
+  obj = list(U = U, V = V, K = K, t_grid = t_grid,
+    vdim = c(nrow(U), nrow(V)))
+  class(obj) <- c("matfcov")
+  return(obj)
+}
+
+create_matrix_eigfunc = function(Phi, Psi, Rho, t_grid) {
+  # validate t
+  stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
+
+  # validate Phi, Psi, Rho
+  stopifnot(nrow(Rho) == length(t_grid))
+
+  # formulate object
+  obj = list(Phi = Phi, Psi = Psi, Rho = Rho, t_grid = t_grid,
+    vdim = c(nrow(Phi), nrow(Psi)))
+  class(obj) <- c("matfeigf")
+  return(obj)
+}
+
+create_matrix_eigval = function(lam_phi, lam_psi, lam_rho) {
+
+  # validate lam_phi, lam_psi, lam_rho
+  lam_phi = as.vector(lam_phi)
+  lam_psi = as.vector(lam_psi)
+  lam_rho = as.vector(lam_rho)
+
+  # formulate object
+  obj = list(lam_phi = lam_phi, lam_psi = lam_psi, lam_rho = lam_rho)
+  class(obj) <- c("matfeigval")
+  return(obj)
+}
+
+create_matrix_eigobj = function(
+    Phi, Psi, Rho, lam_phi, lam_psi, lam_rho, t_grid) {
+  # validate t
+  stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
+
+  # validate Phi, Psi, Rho
+  stopifnot(nrow(Rho) == length(t_grid))
+  
+  # validate Lam
+  stopifnot(ncol(Phi) == length(lam_phi))
+  stopifnot(ncol(Psi) == length(lam_psi))
+  stopifnot(ncol(Rho) == length(lam_rho))
+
+  # formulate object
+  obj = list(
+    funcs = create_matrix_eigfunc(Phi, Psi, Rho, t_grid),
+    values = create_matrix_eigval(lam_phi, lam_psi, lam_rho) 
+  )
+  class(obj) <- c("matfeigen")
+  return(obj)
+}
+
+
+# Evaluate Functions --------------------------------------------------------
+
+evalf = function(f, t, ...) UseMethod("evalf")
+
+evalf.matfcov = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
+  stopifnot(is(f, "matfcov"))
+  if (is.null(t) && is.null(t_idx)) {
+    K = f$K
+  } else {
+    if (!is.null(t)) {
+      t = sort(as.vector(t))
+      diffs = abs(outer(f$t_grid, t, "-"))
+      t_idx = apply(diffs < tol, 2, function(x) which(x)[1])
+      if (any(is.na(t_idx))) {
+        stop("Not all elements in t are in the t_grid.")
+      }
+    } else if (!is.null(t_idx)) {
+      stopifnot(is.integer(t_idx))
+      t_idx = sort(t_idx)
+    }
+    K = f$K[t_idx, t_idx, drop=FALSE]
+  }
+  return(K %x% f$V %x% f$U)
+}
+
+evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
+  stopifnot(is(f, "matfeigf"))
+  if (is.null(t) && is.null(t_idx)) {
+    Rho = f$Rho
+  } else {
+    if (!is.null(t)) {
+      t = sort(as.vector(t))
+      diffs = abs(outer(f$t_grid, t, "-"))
+      t_idx = apply(diffs < tol, 2, function(x) which(x)[1])
+      if (any(is.na(t_idx))) {
+        stop("Not all elements in t are in the t_grid.")
+      }
+    } else if (!is.null(t_idx)) {
+      stopifnot(is.integer(t_idx))
+      t_idx = sort(t_idx)
+    }
+    Rho = f$Rho[t_idx, , drop=FALSE]
+  }
+  return(Rho %x% f$Psi %x% f$Phi)
+}
+
+
+# Wrangling Eigensystem --------------------------------------------------
+
+get_eigval_tnsr.matfeigval = function(eigval) {
+  stopifnot(is(eigval, "matfeigval"))
+  return(eigval$lam_phi %o% eigval$lam_psi %o% eigval$lam_rho)
+}
+
+eigen.matfcov = function(C) {
+  stopifnot(is(C, "matfcov"))
+  eig_U = eigen(C$U)
+  eig_V = eigen(C$V)
+  eig_K = eigen(C$K)
+  nt = length(C$t_grid)
+  t_span = diff(range(C$t_grid))
+  int_factor = t_span / nt
+  obj = create_matrix_eigobj(
+    eig_U$vectors, eig_V$vectors, eig_K$vectors / sqrt(int_factor),
+    eig_U$values, eig_V$values, eig_K$values * int_factor, C$t_grid
+  )
+  return(obj)
+}
+
+match_signs.matfeigf = function(eigf, eigf0) {
+  stopifnot(is(eigf, "matfeigf"))
+  stopifnot(is(eigf0, "matfeigf"))
+  for (d in c("Phi", "Psi", "Rho")) {
+    if (ncol(eigf[[d]]) > ncol(eigf0[[d]])) {
+      message(
+        "More eigenfunctions in the target than in the reference.\n",
+        "Only matching the first ", ncol(eigf0[[d]]), " eigenfunctions.")
+    }
+    r = min(ncol(eigf[[d]]), ncol(eigf0[[d]]))
+    idx = colMeans(eigf[[d]][,1:r,drop=F] * eigf0[[d]][,1:r,drop=F]) < 0
+    if (sum(idx) > 0) {
+      eigf[[d]][,idx] = -eigf[[d]][,idx]
+    }
+  }
+  return(eigf)
+}
+
+match_signs.matfeigen = function(eig, eig0) {
+  stopifnot(is(eig, "matfeigen"))
+  stopifnot(is(eig0, "matfeigen"))
+  eig$funcs = match_signs.matfeigf(eig$funcs, eig0$funcs)
+  return(eig)
+}
+
+.trunc.matfeigen = function(eig, I, J, K) {
+  p = nrow(eig$Phi)
+  q = nrow(eig$Psi)
+  nt = nrow(eig$Rho)
+  obj = create_matrix_eigobj(
+    eig$funcs$Phi[, 1:I, drop=FALSE],
+    eig$funcs$Psi[, 1:J, drop=FALSE],
+    eig$funcs$Rho[, 1:K, drop=FALSE],
+    eig$values$lam_phi[1:I],
+    eig$values$lam_psi[1:J],
+    eig$values$lam_rho[1:K],
+    eig$funcs$t_grid
+  )
+  return(obj)
+}
+
+trunc.matfeigen = function(
+    eig, pve=0.95, I=NULL, J=NULL, K=NULL, verbose = TRUE
+  ) {
+  stopifnot(is(eig, "matfeigen"))
+  stopifnot(pve <= 1 && pve > 0)
+  p = nrow(eig$funcs$Phi)
+  q = nrow(eig$funcs$Psi)
+  nt = nrow(eig$funcs$Rho)
+  rmax_phi = ncol(eig$funcs$Phi)
+  rmax_psi = ncol(eig$funcs$Psi)
+  rmax_rho = ncol(eig$funcs$Rho)
+  stopifnot(is.null(I) || (is.integer(I) && I <= rmax_phi))
+  stopifnot(is.null(J) || (is.integer(J) && J <= rmax_psi))
+  stopifnot(is.null(K) || (is.integer(K) && K <= rmax_rho))
+  
+  # if given rank
+  if (!is.null(I) && !is.null(J) && !is.null(K)) {
+    return(.trunc.matfeigen(eig, I, J, K))
+  }
+  
+  # if given PVE
+  r = rep(1, 3) # rank of the three dim
+  eigval_tnsr = get_eigval_tnsr.matfeigval(eig$values)
+  total_var = sum(eigval_tnsr)
+  curr_pve = eigval_tnsr[1,1,1] / total_var
+  # TODO: allow user to partially specify (I, J, K)
+  while (curr_pve < pve) {
+    if (all(r >= c(rmax_phi, rmax_psi, rmax_rho))) {
+      stop("Max rank reached. Something wrong happened")
+    }
+    var_incrs = c(
+      ifelse(
+        r[1] >= rmax_phi, 0,
+        sum(eigval_tnsr[r[1] + 1, 1:r[2], 1:r[3]])
+      ),
+      ifelse(
+        r[2] >= rmax_psi, 0,
+        sum(eigval_tnsr[1:r[1], r[2] + 1, 1:r[3]])
+      ),
+      ifelse(
+        r[3] >= rmax_rho, 0,
+        sum(eigval_tnsr[1:r[1], 1:r[2], r[3] + 1])
+      )
+    )
+    idx = which.max(var_incrs)
+    r[idx] = r[idx] + 1
+    curr_pve = sum(eigval_tnsr[1:r[1], 1:r[2], 1:r[3]]) / total_var
+  }
+  
+  if (verbose) {
+    cat("Selected rank:", "Row =", r[1], "Col =", r[2], "Time =", r[3], "\n")
+  }
+  
+  return(.trunc.matfeigen(eig, r[1], r[2], r[3]))
+}
+
