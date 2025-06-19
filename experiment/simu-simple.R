@@ -3,6 +3,7 @@ library(Matrix)
 library(rTensor)
 library(data.table)
 
+dev.off()
 pa = par(no.readonly = TRUE)
 
 source("matfdata.R")
@@ -24,9 +25,9 @@ plan(multisession(workers = 4))
 # a small number of "rank-one" eigenfunctions
 
 # dimension and temporal space
-n = 10 # n sample
-p = 100  # dim row
-q = 100  # dim column
+n = 20 # n sample
+p = 20  # dim row
+q = 20  # dim column
 nt = 50 + 1 # num time points
 t_range = c(0,1)
 
@@ -34,7 +35,7 @@ t_range = c(0,1)
 # NOTE: set npc == dimension to ensure full-rank covariances
 npc_row = p
 npc_col = q
-npc_time = 5
+npc_time = 3
 
 # sparse irregular sampling
 sampling_ratio = c(0.05, 0.1)  # (Pmin, Pmax)
@@ -56,21 +57,32 @@ genData <- gen_data_simple(
 data <- genData$data
 cov_true <- genData$cov
 eig_true <- genData$eig
-scores_true <- genData$scores
-X_true = recover_matfdata(eig_true$funcs, scores_true)
+# scores_true <- genData$scores
+# X_true = recover_matfdata(eig_true$funcs, scores_true)
 
 # Estimation --------------------------------------------------------------
 
-cov_fit = fit_matfcov(
-  data, max_iter = 10, tol=1e-8, moment_type = "basic")
-cov_hat = cov_fit$cov
-cat("Ran for", cov_fit$iter, "iterations.")
+cov_hat = fit_matfcov(data, wScheme = "OBS")
+
+# temporal scatter points
+cov_points = do.call(
+  rbind,
+  lapply(
+    data$t_idx_list, \(tid) {
+      expand.grid(s=data$t_grid[tid], t=data$t_grid[tid])
+    }
+  )
+)
+plot(cov_points$s, cov_points$t,
+  xlab="s", ylab="t", main="Time points",
+  xlim=range(data$t_grid), ylim=range(data$t_grid))
+
 
 # evaluate cov estimation
 # mean((evalf.matfcov(cov_hat) - evalf.matfcov(cov_true))^2)
-mean((scale_mat_trace(cov_hat$U) - scale_mat_trace(cov_true$U))^2)
-mean((scale_mat_trace(cov_hat$V) - scale_mat_trace(cov_true$V))^2)
-mean((scale_mat_trace(cov_hat$K) - scale_mat_trace(cov_true$K))^2)
+mean((cov_hat$U - cov_true$U)^2) / mean((cov_true$U)^2)
+mean((cov_hat$V - cov_true$V)^2) / mean((cov_true$V)^2)
+mean((cov_hat$K - cov_true$K)^2) / mean((cov_true$K)^2)
 
 
 par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
@@ -115,9 +127,9 @@ mean((eig_obj_trunc$funcs$Rho[,1:r_time] - eig_true$funcs$Rho[,1:r_time])^2)
 
 
 # estimate scores and recover the process
-scores_hat = get_matfpca_scores(data, eig_obj_trunc)
-X_hat = recover_matfdata(eig_obj_trunc$funcs, scores_hat)
-mean((X_hat@data - X_true@data)^2) / mean(X_true@data^2)
+# scores_hat = get_matfpca_scores(data, eig_obj_trunc)
+# X_hat = recover_matfdata(eig_obj_trunc$funcs, scores_hat)
+# mean((X_hat@data - X_true@data)^2) / mean(X_true@data^2)
 
 # i = sample(1:n, 1)
 # par(mfrow=c(2,1), mar=c(2,1,1,1), oma=c(0,2,2,0))

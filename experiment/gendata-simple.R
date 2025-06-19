@@ -7,7 +7,8 @@ gen_data_simple <- function(
   n = 10, p = 10, q = 10,
   npc_row = p, npc_col = q, npc_time = 3,
   nt = 51, t_range = c(0,1),
-  sampling_ratio = NULL
+  sampling_ratio = NULL,
+  eigset = 1
 ) {
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
@@ -28,15 +29,31 @@ gen_data_simple <- function(
   rho_mat = rho_funcs(t_grid, npc_time)
   
   # eigenvalues
-  lam_phi = 2 * (1:npc_row)^(-1.2)
-  lam_psi = 2 * (1:npc_col)^(-1.3)
+  if (eigset == 1) {
+    lam_phi = seq(2, 0.2, length.out=npc_row)
+    lam_psi = seq(2, 0.2, length.out=npc_col)
+  } else if (eigset == 2) {
+    lam_phi = 2 * (1:npc_row)^(-1.2)
+    lam_psi = 2 * (1:npc_col)^(-1.3)
+  }
   lam_rho = 2 * (1:npc_time)^(-2.0)
   
   eig_true = create_matrix_eigobj(Phi, Psi, rho_mat, lam_phi, lam_psi, lam_rho, t_grid)
   
   U = Phi %*% diag(lam_phi,npc_row,npc_row) %*% t(Phi)
   V = Psi %*% diag(lam_psi,npc_col,npc_col) %*% t(Psi)
-  K = rho_mat %*% diag(lam_rho,) %*% t(rho_mat)
+  K = rho_mat %*% diag(lam_rho,npc_time,npc_time) %*% t(rho_mat)
+  
+  # re-scale covariances
+  scale_U <- sum(lam_phi) / p
+  scale_V <- sum(lam_psi) / q
+  U <- U / scale_U
+  V <- V / scale_V
+  K <- K * scale_U * scale_V
+  lam_phi <- lam_phi / scale_U
+  lam_psi <- lam_psi / scale_V
+  lam_rho <- lam_rho * scale_U * scale_V
+  
   cov_true = create_matrix_covfunc(U, V, K, t_grid)
   
   # FPC scores

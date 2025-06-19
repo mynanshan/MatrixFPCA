@@ -148,6 +148,18 @@ get_subj_tnsr.matfdata.irreg = function(data, i, shape_check=TRUE) {
   }
 }
 
+get_subj_times = function(data, i) UseMethod("get_subj_times")
+
+get_subj_times.matfdata.grid = function(data, i) {
+  return(data$t_grid)
+}
+
+get_subj_times.matfdata.irreg = function(data, i) {
+  i = as.integer(i)
+  stopifnot(length(i) == 1)
+  return(data$t_grid[data$t_idx_list[[i]]])
+}
+
 # Cov. and Eigen. of Matrix-valued FuncData -----------------------------------
 
 create_matrix_covfunc = function(U, V, K, t_grid) {

@@ -3,8 +3,8 @@ library(dplyr)
 library(readr)
 library(ggplot2)
 
-n = 10
-pq = c(10, 50, 100)
+n = 20
+pq = c(10, 20, 50, 100, 200)
 rt = 3
 cm = 0
 
@@ -26,14 +26,37 @@ res <- do.call(
   )
 )
 
-ggplot(res) +
-  geom_point(aes(x = p, y = mseU, color=p))
-ggplot(res) +
-  geom_point(aes(x = p, y = mseV, color=p))
-ggplot(res) +
-  geom_point(aes(x = p, y = mseK, color=p))
+metric_name = "mse"
 
 ggplot(res) +
-  geom_point(aes(x = p, y = relmseX, color=p))
+  geom_line(aes(x = p, y = normV^2))
+# ggplot(res) +
+#   geom_point(aes(x = p, y = sumU))
 
+res_long <- res |>
+  pivot_longer(
+    cols = paste0(metric_name, c("U", "V", "K")),
+    names_to = "metric",
+    values_to = "value") |> 
+  mutate(
+    metric = factor(
+      metric,
+      levels=paste0(metric_name, c("U", "V", "K"))
+    )
+  )
 
+ggplot(res_long |>
+    filter(metric %in% paste0(metric_name, c("U", "V", "K")))) +
+  geom_point(aes(x = p, y = value * p)) +
+  facet_wrap(~metric, scales = "free") + 
+  # scale_y_log10() +
+  labs(x = "Image Dimension", y = "Estimation Error") +
+  theme_bw()
+
+ggplot(res_long |>
+    filter(metric %in% paste0(metric_name, c("U", "V", "K")))) +
+  geom_point(aes(x = p, y = value * p^(2/3))) +
+  facet_wrap(~metric, scales = "free") + 
+  # scale_y_log10() +
+  labs(x = "Image Dimension", y = "Estimation Error") +
+  theme_bw()
