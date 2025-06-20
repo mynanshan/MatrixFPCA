@@ -9,25 +9,19 @@
 
 module load r/4.5.0
 
-# Usage check: at least one argument for the R script and one for the number of repetitions.
-if [ "$#" -lt 1 ]; then
-  echo "Usage: $0 <number_of_repetitions> [n_subjects] [drow] [dcol] [npc] [nfea] [init] [opt] [ls]"
-  exit 1
-fi
-
-n_subjects=${2:-50}
-rt=${3:-3}
-reps=${4:-10}
+n_subjects=${1:-50}
+rt=${2:-3}
+reps=${3:-10}
 
 for p in 10 20 50 100 200 400 600 800 1000; do
   # Loop to run the R script multiple times.
   for ((i=1; i<=reps; i++)); do
     echo "Running simulation iteration $i..."
     sbatch experiment/simu-simple-full.R --n_subjects "$n_subjects" \
-                           --drow "$p" \
-                           --dcol "$p" \
-                           --rt "$rt" \
-                           --repeat "$reps"
+			   --drow "$p" \
+			   --dcol "$p" \
+			   --rt "$rt" \
+			   --repeat "$reps"
   done
 done
 
