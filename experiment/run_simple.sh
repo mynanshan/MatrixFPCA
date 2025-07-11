@@ -10,7 +10,7 @@ rt=${2:-3}
 reps=${3:-1}
 
 # where your helper lives (adjust path as needed)
-GET_CORES_SCRIPT="$(dirname "$0")/experiment/get_num_cores.R"
+GET_CORES_SCRIPT="$(dirname "$0")/get_num_cores.R"
 
 for p in 10 20 50 100 200 400 600 800 1000 1200 1400 1600 1800 2000; do
   # ask R how many cores for this p
