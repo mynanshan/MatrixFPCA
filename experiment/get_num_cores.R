@@ -9,6 +9,6 @@ p <- as.numeric(args[1])
 
 # ==== YOUR CORE‐CHOICE LOGIC HERE ====
 # e.g. 1 core per 200 rows, minimum 1, maximum 32
-num_cores <- min(32, max(1, 2^ceiling(log10(p)) + 1))
+num_cores <- min(32, max(1, 2^ceiling(log10(p) + 1)))
 
 cat(num_cores)
