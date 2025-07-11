@@ -51,17 +51,24 @@ get_working_U <- function(X) {
 ### Update one of U,V,K with others fixed
 
 estimate_K <- function(
-    data, U, V,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE, ...) {
+  data,
+  U,
+  V,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE,
+  ...
+) {
   UseMethod("estimate_K")
 }
 
 estimate_K.matfdata.grid <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
-  if (!is(data, "matfdata.grid")) stop("data needs to be a matfdata.grid")
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE
+) {
+  if (!is(data, "matfdata.grid")) {
+    stop("data needs to be a matfdata.grid")
+  }
   # wScheme is not used in this case
 
   n <- dim(data$X)[1]
@@ -70,21 +77,26 @@ estimate_K.matfdata.grid <- function(
 
   `%op%` <- if (use_parallel) `%dofuture%` else `%do%`
 
-  K_hat <- foreach(i = seq_len(n), .combine = "+") %op% {
-    # get the working K
-    Ki_wk <- get_working_K(get_subj_tnsr(data, i))
-    # TODO: check weighting
-    Ki_wk / (n * p * q)
-  }
+  K_hat <- foreach(i = seq_len(n), .combine = "+") %op%
+    {
+      # get the working K
+      Ki_wk <- get_working_K(get_subj_tnsr(data, i))
+      # TODO: check weighting
+      Ki_wk / (n * p * q)
+    }
 
   return(K_hat)
 }
 
 estimate_K.matfdata.irreg <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
-  if (!is(data, "matfdata.irreg")) stop("data needs to be a matfdata.irreg")
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSEfudan,
+  method = c("mgcv", "face")
+) {
+  if (!is(data, "matfdata.irreg")) {
+    stop("data needs to be a matfdata.irreg")
+  }
   wScheme <- match.arg(wScheme)
 
   n <- length(data$X_list)
@@ -97,34 +109,35 @@ estimate_K.matfdata.irreg <- function(
   K_wk_all <- foreach::foreach(
     i = seq_len(n),
     .combine = rbind
-  ) %op% {
-    # get the working K
-    Ki_wk <- get_working_K(get_subj_tnsr(data, i))
+  ) %op%
+    {
+      # get the working K
+      Ki_wk <- get_working_K(get_subj_tnsr(data, i))
 
-    # only keep the lower half due to symmetry
-    low_tri_id <- lower.tri(Ki_wk, diag = TRUE)
-    Ki_wk <- Ki_wk[low_tri_id]
+      # only keep the lower half due to symmetry
+      low_tri_id <- lower.tri(Ki_wk, diag = TRUE)
+      Ki_wk <- Ki_wk[low_tri_id]
 
-    # create a meshgrid of (t1, t2)
-    t_cov_mesh <- pracma::meshgrid(data$t_grid[data$t_idx_list[[i]]])
+      # create a meshgrid of (t1, t2)
+      t_cov_mesh <- pracma::meshgrid(data$t_grid[data$t_idx_list[[i]]])
 
-    # only keep the corresponding lower half (t2 > t1)
-    t_cov_grid <- cbind(t_cov_mesh$X[low_tri_id], t_cov_mesh$Y[low_tri_id])
+      # only keep the corresponding lower half (t2 > t1)
+      t_cov_grid <- cbind(t_cov_mesh$X[low_tri_id], t_cov_mesh$Y[low_tri_id])
 
-    # points weighting
-    if (wScheme == "OBS") {
-      w <- rep(1, length(Ki_wk))
-    } else {
-      w <- rep(1 / length(Ki_wk), length(Ki_wk))
+      # points weighting
+      if (wScheme == "OBS") {
+        w <- rep(1, length(Ki_wk))
+      } else {
+        w <- rep(1 / length(Ki_wk), length(Ki_wk))
+      }
+
+      data.table::data.table(
+        t1 = t_cov_grid[, 1],
+        t2 = t_cov_grid[, 2],
+        Kval = as.vector(Ki_wk) / (p * q), # divide by tr(U)tr(V)
+        w = w
+      )
     }
-
-    data.table::data.table(
-      t1 = t_cov_grid[, 1],
-      t2 = t_cov_grid[, 2],
-      Kval = as.vector(Ki_wk) / (p * q), # divide by tr(U)tr(V)
-      w = w
-    )
-  }
 
   # fit the smooth surface of K
   # TODO: optimize using mgcv::bam
@@ -143,7 +156,8 @@ estimate_K.matfdata.irreg <- function(
   K_u_hat[low_tri_id] <- predict(
     fit_K,
     newdata = data.table::data.table(
-      t1 = t_cov_grid[, 1], t2 = t_cov_grid[, 2]
+      t1 = t_cov_grid[, 1],
+      t2 = t_cov_grid[, 2]
     )
   )
   # copy the lower triangle to upper triangle
@@ -154,17 +168,22 @@ estimate_K.matfdata.irreg <- function(
 }
 
 estimate_U <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE, ...) {
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE,
+  ...
+) {
   UseMethod("estimate_U")
 }
 
 estimate_U.matfdata.grid <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
-  if (!is(data, "matfdata.grid")) stop("data needs to be a matfdata.grid")
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE
+) {
+  if (!is(data, "matfdata.grid")) {
+    stop("data needs to be a matfdata.grid")
+  }
   # wSceheme is not used in this case
 
   n <- dim(data$X)[1]
@@ -174,10 +193,11 @@ estimate_U.matfdata.grid <- function(
 
   `%op%` <- if (use_parallel) `%dofuture%` else `%do%`
 
-  U_hat <- foreach(i = seq_len(n), .combine = "+") %op% {
-    U_wk <- get_working_U(get_subj_tnsr(data, i))
-    U_wk / (n * q * nt)
-  }
+  U_hat <- foreach(i = seq_len(n), .combine = "+") %op%
+    {
+      U_wk <- get_working_U(get_subj_tnsr(data, i))
+      U_wk / (n * q * nt)
+    }
 
   return(U_hat)
 }
@@ -185,10 +205,13 @@ estimate_U.matfdata.grid <- function(
 # FIXME: recheck the weighting schemes
 
 estimate_U.matfdata.irreg <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
-  if (!is(data, "matfdata.irreg")) stop("data needs to be a matfdata.irreg")
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE
+) {
+  if (!is(data, "matfdata.irreg")) {
+    stop("data needs to be a matfdata.irreg")
+  }
   wScheme <- match.arg(wScheme)
 
   n <- length(data$X_list)
@@ -200,16 +223,17 @@ estimate_U.matfdata.irreg <- function(
   `%op%` <- if (use_parallel) `%dofuture%` else `%do%`
 
   # average all working U
-  U_hat <- foreach::foreach(i = seq_len(n), .combine = "+") %op% {
-    t_id <- data$t_idx_list[[i]]
-    Ni <- length(t_id)
-    U_wk <- get_working_U(get_subj_tnsr(data, i))
-    if (wScheme == "OBS") {
-      return(U_wk / q)
-    } else {
-      return(U_wk / (Ni * q))
+  U_hat <- foreach::foreach(i = seq_len(n), .combine = "+") %op%
+    {
+      t_id <- data$t_idx_list[[i]]
+      Ni <- length(t_id)
+      U_wk <- get_working_U(get_subj_tnsr(data, i))
+      if (wScheme == "OBS") {
+        return(U_wk / q)
+      } else {
+        return(U_wk / (Ni * q))
+      }
     }
-  }
 
   if (wScheme == "OBS") {
     return(U_hat / totalN)
@@ -221,17 +245,22 @@ estimate_U.matfdata.irreg <- function(
 }
 
 estimate_V <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE, ...) {
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE,
+  ...
+) {
   UseMethod("estimate_V")
 }
 
 estimate_V.matfdata.grid <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
-  if (!is(data, "matfdata.grid")) stop("data needs to be a matfdata.grid")
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE
+) {
+  if (!is(data, "matfdata.grid")) {
+    stop("data needs to be a matfdata.grid")
+  }
   wScheme <- match.arg(wScheme)
 
   n <- dim(data$X)[1]
@@ -241,19 +270,25 @@ estimate_V.matfdata.grid <- function(
 
   `%op%` <- if (use_parallel) `%dofuture%` else `%do%`
 
-  V_hat <- foreach(i = seq_len(n), .combine = "+") %op% {
-    V_wk <- get_working_V(get_subj_tnsr(data, i))
-    V_wk / (n * p * nt)
-  }
+  V_hat <- foreach(i = seq_len(n), .combine = "+") %op%
+    {
+      V_wk <- get_working_V(get_subj_tnsr(data, i))
+      V_wk / (n * p * nt)
+    }
 
   return(V_hat)
 }
 
 estimate_V.matfdata.irreg <- function(
-    data, U, K,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
-  if (!is(data, "matfdata.irreg")) stop("data needs to be a matfdata.irreg")
+  data,
+  U,
+  K,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE
+) {
+  if (!is(data, "matfdata.irreg")) {
+    stop("data needs to be a matfdata.irreg")
+  }
   wScheme <- match.arg(wScheme)
 
   n <- length(data$X_list)
@@ -265,16 +300,17 @@ estimate_V.matfdata.irreg <- function(
   `%op%` <- if (use_parallel) `%dofuture%` else `%do%`
 
   # average all working V
-  V_hat <- foreach::foreach(i = seq_len(n), .combine = "+") %op% {
-    t_id <- data$t_idx_list[[i]]
-    Ni <- length(t_id)
-    V_wk <- get_working_V(get_subj_tnsr(data, i))
-    if (wScheme == "OBS") {
-      return(V_wk / p)
-    } else {
-      return(V_wk / (Ni * p))
+  V_hat <- foreach::foreach(i = seq_len(n), .combine = "+") %op%
+    {
+      t_id <- data$t_idx_list[[i]]
+      Ni <- length(t_id)
+      V_wk <- get_working_V(get_subj_tnsr(data, i))
+      if (wScheme == "OBS") {
+        return(V_wk / p)
+      } else {
+        return(V_wk / (Ni * p))
+      }
     }
-  }
 
   if (wScheme == "OBS") {
     return(V_hat / totalN)
@@ -288,9 +324,10 @@ estimate_V.matfdata.irreg <- function(
 ### Main Estimation Function
 
 fit_matfcov <- function(
-    data,
-    wScheme = c("OBS", "SUBJ"),
-    use_parallel = FALSE) {
+  data,
+  wScheme = c("OBS", "SUBJ"),
+  use_parallel = FALSE
+) {
   wScheme <- match.arg(wScheme)
 
   p <- data$vdim[1]
@@ -309,7 +346,11 @@ fit_matfcov <- function(
 
 
 get_matfpca_scores <- function(
-    data, eig, nugget = 1e-8, use_parallel = FALSE) {
+  data,
+  eig,
+  nugget = 1e-8,
+  use_parallel = FALSE
+) {
   n <- count_subj(data)
   I <- ncol(eig$funcs$Phi)
   J <- ncol(eig$funcs$Psi)
@@ -322,21 +363,27 @@ get_matfpca_scores <- function(
 
   # for (i in seq_len(n)) {
   scores_list <- foreach::foreach(
-    i = seq_len(n), .combine = c, .multicombine = TRUE
-  ) %op% {
-    Rhoi <- eig$funcs$Rho[data$t_idx_list[[i]], , drop = F]
-    mi <- length(data$t_idx_list[[i]])
-    Ki_inv <- solve(Rhoi %*% t(sweep(Rhoi, 2, lam_rho, "*")) + diag(nugget, mi, mi))
-    scores_i <- rTensor::ttl(
-      get_subj_tnsr(data, i),
-      list(
-        t(eig$funcs$Phi),
-        t(eig$funcs$Psi),
-        t(sweep(Rhoi, 2, lam_rho, "*")) %*% Ki_inv
-      ), 1:3
-    )
-    list(scores_i)
-  }
+    i = seq_len(n),
+    .combine = c,
+    .multicombine = TRUE
+  ) %op%
+    {
+      Rhoi <- eig$funcs$Rho[data$t_idx_list[[i]], , drop = F]
+      mi <- length(data$t_idx_list[[i]])
+      Ki_inv <- solve(
+        Rhoi %*% t(sweep(Rhoi, 2, lam_rho, "*")) + diag(nugget, mi, mi)
+      )
+      scores_i <- rTensor::ttl(
+        get_subj_tnsr(data, i),
+        list(
+          t(eig$funcs$Phi),
+          t(eig$funcs$Psi),
+          t(sweep(Rhoi, 2, lam_rho, "*")) %*% Ki_inv
+        ),
+        1:3
+      )
+      list(scores_i)
+    }
 
   for (i in seq_len(n)) {
     scores[i, , , ] <- scores_list[[i]]
@@ -352,7 +399,9 @@ recover_matfdata <- function(eigf, scores, mean_func = NULL) {
   K <- ncol(eigf$Rho)
   stopifnot(length(dim(scores)) == 4)
   stopifnot(all(dim(scores)[2:4] == c(I, J, K)))
-  if (is.array(scores)) scores <- rTensor::as.tensor(scores)
+  if (is.array(scores)) {
+    scores <- rTensor::as.tensor(scores)
+  }
 
   X <- with(eigf, ttl(scores, list(Phi, Psi, Rho), 2:4))
   return(X)

@@ -3,7 +3,7 @@ library(Matrix)
 library(rTensor)
 library(data.table)
 
-dev.off()
+# dev.off()
 pa = par(no.readonly = TRUE)
 
 source("matfdata.R")
@@ -26,8 +26,8 @@ plan(multisession(workers = 4))
 
 # dimension and temporal space
 n = 20 # n sample
-p = 20  # dim row
-q = 20  # dim column
+p = 1000  # dim row
+q = 1000  # dim column
 nt = 50 + 1 # num time points
 t_range = c(0,1)
 

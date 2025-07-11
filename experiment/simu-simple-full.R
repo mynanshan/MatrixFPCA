@@ -14,8 +14,6 @@ library(RhpcBLASctl)
 
 RhpcBLASctl::blas_set_num_threads(4)
 
-pa = par(no.readonly = TRUE)
-
 source("matfdata.R")
 source("matfpca.R")
 source("plot_utils.R")
