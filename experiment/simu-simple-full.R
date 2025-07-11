@@ -5,14 +5,15 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem-per-cpu=32G                          # Memory allocation
+#SBATCH --mem-per-cpu=2G                          # Memory allocation
 library(fda)
 library(Matrix)
 library(rTensor)
 library(argparse)
 library(RhpcBLASctl)
 
-RhpcBLASctl::blas_set_num_threads(4)
+num_cores <- RhpcBLASctl::blas_get_num_procs()
+RhpcBLASctl::blas_set_num_threads(num_cores - 1)
 
 source("matfdata.R")
 source("matfpca.R")
@@ -50,7 +51,7 @@ parser$add_argument("-cm", "--compare_methods",
   help = "Whether compare different FPCA methods"
 )
 parser$add_argument("--repeat",
-  type = "integer", default = 100,
+  type = "integer", default = 1,
   help = "Number of repeat"
 )
 
@@ -65,6 +66,7 @@ compare_methods <- args[["compare_methods"]]
 nrepeat <- args[["repeat"]]
 
 dir_path <- file.path("experiment", "results")
+if (!dir.exists(dir_path)) dir.create(dir_path, recursive = TRUE)
 file_id <- paste0(
   "_n",n,"_p",p,"_q",q,
   "_rt",npc_time,
