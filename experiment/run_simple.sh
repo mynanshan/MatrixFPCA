@@ -7,7 +7,7 @@ module load r/4.5.0
 # defaults: ./run_simple.sh [n_subjects] [rt] [reps]
 n_subjects=${1:-30}
 rt=${2:-3}
-reps=${3:-1}
+reps=${3:-10}
 
 # where your helper lives (adjust path as needed)
 GET_CORES_SCRIPT="$(dirname "$0")/get_num_cores.R"
