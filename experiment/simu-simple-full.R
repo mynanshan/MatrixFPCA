@@ -65,6 +65,14 @@ eigset = args[["data_set"]]
 compare_methods <- args[["compare_methods"]]
 nrepeat <- args[["repeat"]]
 
+cat(
+  ">>>>>>>>>>> Settings <<<<<<<<<<< \n",
+  "n=", n, "\n",
+  "p=", p, "\n",
+  "q=", q, "\n",
+  "npc_time=", npc_time, "\n"
+)
+
 dir_path <- file.path("experiment", "results")
 if (!dir.exists(dir_path)) dir.create(dir_path, recursive = TRUE)
 file_id <- paste0(
