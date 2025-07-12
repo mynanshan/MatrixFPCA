@@ -20,11 +20,17 @@ for p in 10 20 50 100 200 400 600 800 1000 1200 1400 1600 1800 2000; do
     echo "[$(date +%T)] p=$p, iteration $i, requesting $num_cores cores..."
     sbatch \
       --cpus-per-task="$num_cores" \
+      --job-name="simu-simple" \
+      --output="output_files/simu_simple_%j.out" \
+      --time="6:00:00" \
+      --nodes=1 \
+      --ntasks=1 \
+      --mem-per-cpu=2G \
       --wrap="Rscript experiment/simu-simple-full.R \
         --n_subjects $n_subjects \
-        --drow $p \
-        --dcol $p \
-        --rt $rt \
+        --d_row $p \
+        --d_col $p \
+        --rank_time $rt \
         --repeat $reps"
   done
 done
