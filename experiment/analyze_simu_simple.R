@@ -3,8 +3,8 @@ library(dplyr)
 library(readr)
 library(ggplot2)
 
-n = 50
-pq = c(10, 20, 50, 100, 200, 400, 600, 800, 1000)
+n = 30
+pq = c(10, 20, 50, 100, seq(200, 2000, 200))
 rt = 3
 cm = 0
 
@@ -56,7 +56,7 @@ ggplot(res_long |>
   geom_point(aes(x = p, y = value * p)) +
   facet_wrap(~metric, scales = "free") + 
   scale_y_log10() +
-  scale_x_log10() +
+  # scale_x_log10() +
   labs(x = "Image Dimension", y = "Estimation Error") +
   theme_bw()
 
@@ -65,6 +65,6 @@ ggplot(res_long |>
   geom_point(aes(x = p, y = value * log(p))) +
   facet_wrap(~metric, scales = "free") + 
   scale_y_log10() + 
-  scale_x_log10() +
+  # scale_x_log10() +
   labs(x = "Image Dimension", y = "Estimation Error") +
   theme_bw()
