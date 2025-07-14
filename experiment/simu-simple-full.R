@@ -1,11 +1,11 @@
 #!/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v3/Compiler/gcccore/r/4.5.0/bin/Rscript
-#SBATCH --job-name=simu-simple        # Job name
-#SBATCH --output=logs/simu_simple_%j.out         # Standard output file (%j expands to jobID)
-#SBATCH --time=6:00:00                   # Maximum runtime (hh:mm:ss)
+#SBATCH --job-name=simu-simple
+#SBATCH --output=logs/simu_simple_%j.out
+#SBATCH --time=6:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem-per-cpu=2G                          # Memory allocation
+#SBATCH --mem-per-cpu=2G
 library(fda)
 library(Matrix)
 library(rTensor)
@@ -30,6 +30,14 @@ parser$add_argument("-n", "--n_subjects",
   type = "integer", default = 10,
   help = "Number of subjects"
 )
+parser$add_argument("-s1", "--s_obs_min",
+  type = "integer", default = 1,
+  help = "Min sampling ratio, 1 unit for 0.05."
+)
+parser$add_argument("-s2", "--s_obs_max",
+  type = "integer", default = 21,
+  help = "Max sampling ratio, 1 unit for 0.05."
+)
 parser$add_argument("-p", "--d_row",
   type = "integer", default = 10,
   help = "Dimension of rows"
@@ -46,7 +54,7 @@ parser$add_argument("-set", "--data_set",
   type = "integer", default = 1,
   help = "Which data generation settings."
 )
-parser$add_argument("-cm", "--compare_methods",
+parser$add_argument("-cm", "-experiment/run_simple.sh-compare_methods",
   type = "logical", default = FALSE,
   help = "Whether compare different FPCA methods"
 )
@@ -58,6 +66,12 @@ parser$add_argument("--repeat",
 args <- parser$parse_args()
 
 n <- args[["n_subjects"]]
+s_unit <- 0.05
+s1 <- args[["s_obs_min"]]
+s2 <- args[["s_obs_max"]]
+if (s2 > 20) s2 <- s1 + 1
+sr1 <- s1 * s_unit
+sr2 <- s2 * s_unit
 p <- args[["d_row"]]
 q <- args[["d_col"]]
 npc_time = args[["rank_time"]]
@@ -86,6 +100,7 @@ metafile_name <- paste0("meta-simu-simple", file_id, ".txt")
 header <- c(
   "method",
   "n","p","q",
+  "s1", "s2",
   "normU", "normV", "normK",
   "sumU", "sumV", "sumK",
   "maxU", "maxV", "maxK",
@@ -117,7 +132,7 @@ npc_col = q
 # npc_time
 
 # sparse irregular sampling
-sampling_ratio = c(0.05, 0.1)  # (Pmin, Pmax)
+sampling_ratio = c(s1, s2)  # (Pmin, Pmax)
 
 genData <- gen_data_simple(
   n, p, q,
@@ -170,6 +185,7 @@ output <- c(
   # settings
   "MatFPCA",
   n, p, q,
+  s1, s2,
   sqrt(sum((cov_true$U)^2)),
   sqrt(sum((cov_true$V)^2)),
   sqrt(sum((cov_true$K)^2)),
