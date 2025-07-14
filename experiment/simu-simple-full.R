@@ -91,6 +91,7 @@ dir_path <- file.path("experiment", "results")
 if (!dir.exists(dir_path)) dir.create(dir_path, recursive = TRUE)
 file_id <- paste0(
   "_n",n,"_p",p,"_q",q,
+  "_s",s1,"s",s2,
   "_rt",npc_time,
   "_cm",as.integer(compare_methods)
 )
