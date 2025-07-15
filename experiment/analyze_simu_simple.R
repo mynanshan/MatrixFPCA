@@ -67,7 +67,7 @@ res <- do.call(
         "_rt",rt,
         "_cm",as.integer(cm)
       )
-      metafile_name <- paste0("meta-simu-simple", file_id, ".txt")
+      metafile_name <- paste0("meta-simu-simple.txt")
       file_name <- paste0("res-simu-simple", file_id, ".txt")
       if (!file.exists(file.path(dir_path, file_name))) return(NULL)
       header <- read.table(file.path(dir_path, metafile_name))[['V1']]

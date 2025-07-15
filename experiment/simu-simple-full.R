@@ -96,12 +96,11 @@ file_id <- paste0(
   "_cm",as.integer(compare_methods)
 )
 file_name <- paste0("res-simu-simple", file_id, ".txt")
-metafile_name <- paste0("meta-simu-simple", file_id, ".txt")
+metafile_name <- paste0("meta-simu-simple.txt")
 
 header <- c(
   "method",
-  "n","p","q",
-  "s1", "s2",
+  "n", "s1", "s2",
   "normU", "normV", "normK",
   "sumU", "sumV", "sumK",
   "maxU", "maxV", "maxK",
@@ -133,7 +132,7 @@ npc_col = q
 # npc_time
 
 # sparse irregular sampling
-sampling_ratio = c(s1, s2)  # (Pmin, Pmax)
+sampling_ratio = c(sr1, sr2)  # (Pmin, Pmax)
 
 genData <- gen_data_simple(
   n, p, q,
@@ -185,8 +184,7 @@ maxdiffK <- max(abs(cov_hat$K - cov_true$K))
 output <- c(
   # settings
   "MatFPCA",
-  n, p, q,
-  s1, s2,
+  n, p, q, s1, s2,
   sqrt(sum((cov_true$U)^2)),
   sqrt(sum((cov_true$V)^2)),
   sqrt(sum((cov_true$K)^2)),
