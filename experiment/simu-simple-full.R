@@ -54,7 +54,7 @@ parser$add_argument("-set", "--data_set",
   type = "integer", default = 1,
   help = "Which data generation settings."
 )
-parser$add_argument("-cm", "-experiment/run_simple.sh-compare_methods",
+parser$add_argument("-cm", "--compare_methods",
   type = "logical", default = FALSE,
   help = "Whether compare different FPCA methods"
 )
