@@ -54,9 +54,9 @@ parser$add_argument("-set", "--data_set",
   type = "integer", default = 1,
   help = "Which data generation settings."
 )
-parser$add_argument("-cm", "--compare_methods",
-  type = "logical", default = FALSE,
-  help = "Whether compare different FPCA methods"
+parser$add_argument("--seed0",
+  type = "integer", default = 1,
+  help = "The base seed"
 )
 parser$add_argument("--repeat",
   type = "integer", default = 1,
@@ -76,7 +76,7 @@ p <- args[["d_row"]]
 q <- args[["d_col"]]
 npc_time = args[["rank_time"]]
 eigset = args[["data_set"]]
-compare_methods <- args[["compare_methods"]]
+seed0 <- args[["seed0"]]
 nrepeat <- args[["repeat"]]
 
 cat(
@@ -92,14 +92,14 @@ if (!dir.exists(dir_path)) dir.create(dir_path, recursive = TRUE)
 file_id <- paste0(
   "_n",n,"_p",p,"_q",q,
   "_s",s1,"s",s2,
-  "_rt",npc_time,
-  "_cm",as.integer(compare_methods)
+  "_rt",npc_time
 )
 file_name <- paste0("res-simu-simple", file_id, ".txt")
 metafile_name <- paste0("meta-simu-simple.txt")
 
 header <- c(
   "method",
+  "seed",
   "n", "s1", "s2",
   "normU", "normV", "normK",
   "sumU", "sumV", "sumK",
@@ -117,6 +117,8 @@ header <- c(
 
 cat(header, sep = "\n", file = file.path(dir_path, metafile_name))
 
+seed_base = seed0 * nrepeat
+
 # Data Generation ---------------------------------------------------------
 
 for (ir in 1:nrepeat) {
@@ -133,6 +135,9 @@ npc_col = q
 
 # sparse irregular sampling
 sampling_ratio = c(sr1, sr2)  # (Pmin, Pmax)
+
+seed <- seed_base + ir
+set.seed(seed)
 
 genData <- gen_data_simple(
   n, p, q,
@@ -184,6 +189,7 @@ maxdiffK <- max(abs(cov_hat$K - cov_true$K))
 output <- c(
   # settings
   "MatFPCA",
+  seed,
   n, p, q, s1, s2,
   sqrt(sum((cov_true$U)^2)),
   sqrt(sum((cov_true$V)^2)),
@@ -220,30 +226,5 @@ output <- c(
 write(paste0(output, collapse = ","),
   file = file.path(dir_path, file_name), append = TRUE)
 
-if (compare_methods) {
-  # TODO
-  
-  # Chiou's Multivariate FPCA -----------------------------------------------
-  # TODO: look for codes of this method
-  
-  
-  # Happ's MFPCA ------------------------------------------------------------
-  
-  # convert data to Happ's funData format
-  # t_list <- get_t_list(data)
-  # indices <- expand.grid(i=1:p, j=1:q)
-  # funDataList <- mapply(
-  #   \(i, j) {
-  #     funData::irregFunData(
-  #       t_list, lapply(data$X_list, \(X) X@data[i,j,]))
-  #   }, indices$i, indices$j
-  # )
-  # mfunData <- funData::multiFunData(funDataList)
-  
-  
-  # Haixu's MFPC ------------------------------------------------------------
-  
-}
-  
 }
 
