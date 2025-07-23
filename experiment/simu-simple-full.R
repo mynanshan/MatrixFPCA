@@ -125,7 +125,7 @@ for (ir in 1:nrepeat) {
 cat("Repeat", ir, "\n")
 # dimension and temporal space
 # n, p, q
-nt = 50 + 1 # num time points
+nt = 100 + 1 # num time points
 t_range = c(0,1)
 
 # rank settings

@@ -26,8 +26,8 @@ plan(multisession(workers = 4))
 
 # dimension and temporal space
 n = 20 # n sample
-p = 1000  # dim row
-q = 1000  # dim column
+p = 30  # dim row
+q = 30  # dim column
 nt = 50 + 1 # num time points
 t_range = c(0,1)
 

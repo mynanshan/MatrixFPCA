@@ -91,8 +91,9 @@ estimate_K.matfdata.grid <- function(
 estimate_K.matfdata.irreg <- function(
   data,
   wScheme = c("OBS", "SUBJ"),
-  use_parallel = FALSEfudan,
-  method = c("mgcv", "face")
+  use_parallel = FALSE,
+  nbasis = "sparse",
+  ndeg = 3
 ) {
   if (!is(data, "matfdata.irreg")) {
     stop("data needs to be a matfdata.irreg")
@@ -103,6 +104,7 @@ estimate_K.matfdata.irreg <- function(
   nt <- length(data$t_grid)
   p <- data$vdim[1]
   q <- data$vdim[2]
+  LNi <- sapply(data$t_idx_list, length)
 
   `%op%` <- if (use_parallel) `%dofuture%` else `%do%`
 
@@ -140,10 +142,17 @@ estimate_K.matfdata.irreg <- function(
     }
 
   # fit the smooth surface of K
-  # TODO: optimize using mgcv::bam
+  nb <- choose.nbasis(
+    nbasis = nbasis,
+    ndeg = ndeg,
+    nsubj = n,
+    nobs = sum(LNi),
+    nloc = length(unique(K_wk_all$t1))
+  )
   K_wk_all$w <- K_wk_all$w / mean(K_wk_all$w)
-  fit_K <- mgcv::gam(
-    Kval ~ ti(t1) + ti(t2) + ti(t1, t2),
+  covEstFunc <- ifelse(nrow(K_wk_all) > 1e5, mgcv::bam, mgcv::gam)
+  fit_K <- covEstFunc(
+    Kval ~ te(t1, t2, k = c(nb, nb), bs = "ps"),
     data = K_wk_all,
     weights = K_wk_all$w
   )
@@ -165,6 +174,36 @@ estimate_K.matfdata.irreg <- function(
   diag(K_hat) <- diag(K_u_hat)
 
   return(K_hat)
+}
+
+choose.nbasis <- function(
+  nbasis = "sparse",
+  nbasis.min = 5,
+  ndeg = 3,
+  nsubj = NULL,
+  nobs = NULL,
+  nloc = NULL
+) {
+  ## Arguments
+  # nbasis: Assume smoothness >= ndeg
+  #   (1) numeric vector, return nbasis as is
+  #   (2) "sparse"
+  #   (3) "dense"
+  if (is.numeric(nbasis)) {
+    return(as.integer(nbasis))
+  }
+  if (nbasis == "sparse") {
+    Nmean <- nobs / nsubj
+    nb <- nbasis.min + ceiling((nsubj * Nmean^2)^(1/(2*ndeg + 2))) - 1
+  }
+  if (nbasis == "dense") {
+    Nmean <- nobs / nsubj
+    scaling <- Nmean / 2  # an intuitive scaling
+    nb <- nbasis.min + ceiling(scaling * nsubj^(1/(2*ndeg))) - 1
+  }
+  # restrict the number of marginal basis functions to be
+  # smaller than number of unique observation locations
+  min(nb, nloc)
 }
 
 estimate_U <- function(
