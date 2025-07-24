@@ -7,3 +7,5 @@
 **/plots/
 **/output_files
 *.rds
+
+**/deprecated/

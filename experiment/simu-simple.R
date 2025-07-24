@@ -17,7 +17,8 @@ source("experiment/gendata-simple.R")
 # # Register the cluster with doParallel
 # doParallel::registerDoParallel(cl)
 
-plan(multisession(workers = 4))
+num_cores <- RhpcBLASctl::blas_get_num_procs()
+RhpcBLASctl::blas_set_num_threads(num_cores - 2)
 
 # Data Generation ---------------------------------------------------------
 
@@ -26,8 +27,8 @@ plan(multisession(workers = 4))
 
 # dimension and temporal space
 n = 20 # n sample
-p = 30  # dim row
-q = 30  # dim column
+p = 200  # dim row
+q = 200  # dim column
 nt = 50 + 1 # num time points
 t_range = c(0,1)
 

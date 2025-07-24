@@ -76,7 +76,7 @@ p <- args[["d_row"]]
 q <- args[["d_col"]]
 npc_time = args[["rank_time"]]
 eigset = args[["data_set"]]
-seed0 <- args[["seed0"]]
+seed0 <- args[["seed0"]] - 1
 nrepeat <- args[["repeat"]]
 
 cat(
@@ -100,7 +100,7 @@ metafile_name <- paste0("meta-simu-simple.txt")
 header <- c(
   "method",
   "seed",
-  "n", "s1", "s2",
+  "n", "p", "q", "s1", "s2", "nt",
   "normU", "normV", "normK",
   "sumU", "sumV", "sumK",
   "maxU", "maxV", "maxK",
@@ -126,7 +126,7 @@ cat("Repeat", ir, "\n")
 # dimension and temporal space
 # n, p, q
 nt = 100 + 1 # num time points
-t_range = c(0,1)
+t_range = c(0, 1)
 
 # rank settings
 npc_row = p
@@ -190,7 +190,7 @@ output <- c(
   # settings
   "MatFPCA",
   seed,
-  n, p, q, s1, s2,
+  n, p, q, s1, s2, nt,
   sqrt(sum((cov_true$U)^2)),
   sqrt(sum((cov_true$V)^2)),
   sqrt(sum((cov_true$K)^2)),
@@ -223,8 +223,17 @@ output <- c(
   as.numeric(time_end - time_start) |> round(3)
 )
 
-write(paste0(output, collapse = ","),
-  file = file.path(dir_path, file_name), append = TRUE)
+if (interactive()) {
+  names(output) <- header
+  print(output)
+} else {
+  write(
+    paste0(output, collapse = ","),
+    file = file.path(dir_path, file_name),
+    append = TRUE
+  )
+}
 
 }
+
 

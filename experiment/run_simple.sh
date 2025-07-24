@@ -38,6 +38,7 @@ for p in 10 20 50 100 200 400 600 800 1000 1200 1400 1600 1800 2000; do
           --d_row $p \
           --d_col $p \
           --rank_time $rt \
+          --seed0 $i \
           --repeat $reps"
     done
   done
