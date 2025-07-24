@@ -10,4 +10,4 @@ p <- as.numeric(args[1])
 # ==== YOUR MEM‐CHOICE LOGIC HERE ====
 mem <- min(1, max(8, 2^ceiling(log10(p))))
 
-cat(num_cores)
+cat(mem)
