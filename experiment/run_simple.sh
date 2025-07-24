@@ -17,7 +17,7 @@ for p in 10 20 50 100 200 400 600 800 1000 1200 1400 1600 1800 2000; do
   # ask R how many cores for this p
   num_cores=$(Rscript "$GET_CORES_SCRIPT" "$p")
   mem_per_core=$(Rscript "$GET_MEM_SCRIPT" "$p")
-  echo ">>>> [$(date +%T)] p=$p, iteration $i, requesting $num_cores cores..."
+  echo ">>>> [$(date +%T)] p=$p, requesting $num_cores cores, ${mem_per_cores}G per core..."
 
   for s in 1 2 3 4; do
     echo ">> Sampling level $s"
