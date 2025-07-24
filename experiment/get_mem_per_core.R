@@ -8,6 +8,6 @@ if (length(args) < 1) {
 p <- as.numeric(args[1])
 
 # ==== YOUR MEM‐CHOICE LOGIC HERE ====
-mem <- min(1, max(8, 2^ceiling(log10(p))))
+mem <- min(8, max(1, 2^ceiling(log10(p))))
 
 cat(mem)
