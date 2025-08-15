@@ -209,6 +209,6 @@ for (m in mList) {
 
   }
 
-  readr::write_csv(res, file = file.path(dir_path, file_name))
+  readr::write_csv(res, file = file.path(dir_path, file_name), append = TRUE)
 
 }
