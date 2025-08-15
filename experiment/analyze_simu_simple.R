@@ -51,35 +51,35 @@ fix_lines = function(filename, start_key = "MatFPCA,") {
   writeLines(fixed_lines, filename)
 }
 
-n = 30
+n = 20
 pq = c(10, 20, 50, 100, seq(200, 2000, 200))
+s1vec = 1:4
 rt = 3
-cm = 0
 
 dir_path <- file.path("experiment", "results")
 
-res <- do.call(
-  rbind, lapply(
-    pq, \(p) {
-      print(p)
-      file_id <- paste0(
-        "_n",n,"_p",p,"_q",p,
-        "_rt",rt,
-        "_cm",as.integer(cm)
-      )
-      metafile_name <- paste0("meta-simu-simple.txt")
-      file_name <- paste0("res-simu-simple", file_id, ".txt")
-      if (!file.exists(file.path(dir_path, file_name))) return(NULL)
-      header <- read.table(file.path(dir_path, metafile_name))[['V1']]
-      fix_lines(file.path(dir_path, file_name))
-      read.csv(file.path(dir_path, file_name), col.names = header, header=FALSE)
-    }
-  )
-)
+res <- list()
+for (p in pq) {
+  for (s1 in s1vec) {
+    message("Dimension:", p, " Sampling level:", s1)
+    file_id <- paste0(
+      "_n",n,"_p",p,"_q",p,
+      "_s",s1,"s",s1+1,"_rt",rt
+    )
+    metafile_name <- paste0("meta-simu-simple.txt")
+    file_name <- paste0("res-simu-simple", file_id, ".txt")
+    if (!file.exists(file.path(dir_path, file_name))) return(NULL)
+    header <- read.table(file.path(dir_path, metafile_name))[['V1']]
+    fix_lines(file.path(dir_path, file_name))
+    res[[length(res)+1]] <- read.csv(
+      file.path(dir_path, file_name),
+      col.names = header, header=FALSE
+    )
+  }
+}
+res <- do.call(rbind, res)
 
-dim_counts <- res |> group_by(p) |> count(name = "num") |> ungroup()
-# dims_rm <- dim_counts |> filter(num < median(num)) |> pull(p)
-# res <- res |> filter(!(p %in% dims_rm))
+res |> group_by(p, s1) |> count(name = "num") |> ungroup()
 
 
 metric_name = "mse"
@@ -103,28 +103,42 @@ res_long <- res |>
 
 ggplot(res_long |>
     filter(metric %in% paste0(metric_name, c("U", "V")))) +
-  geom_point(aes(x = p, y = value * p)) +
-  facet_wrap(~metric, scales = "free") + 
+  geom_point(aes(x = p, y = value * p), shape = 1) +
+  facet_grid(s1 ~ metric, scales = "free") + 
   scale_y_log10() +
-  # scale_x_log10() +
+  scale_x_log10() +
   labs(x = "Image Dimension", y = "Estimation Error") +
   theme_bw()
 
 ggplot(res_long |>
     filter(metric %in% paste0(metric_name, c("K")))) +
-  geom_point(aes(x = p, y = value * log(p))) +
-  facet_wrap(~metric, scales = "free") + 
+  geom_point(aes(x = p, y = value * log(p)), shape = 1) +
+  facet_wrap( ~ s1, scales = "free") + 
+  scale_y_log10() + 
+  # scale_x_log10() +
+  labs(x = "Image Dimension", y = "Estimation Error") +
+  theme_bw()
+
+ggplot(
+  res_long |>
+    filter(metric %in% paste0(metric_name, c("K")))
+      # |> filter(p<=400)
+  ) +
+  geom_point(aes(x = p, y = value * p^2), shape = 1) +
+  facet_wrap(~ s1, scales = "free") + 
   scale_y_log10() + 
   scale_x_log10() +
   labs(x = "Image Dimension", y = "Estimation Error") +
   theme_bw()
 
-ggplot(res_long |>
-    filter(metric %in% paste0(metric_name, c("K"))) |> 
-  filter(p<=100)) +
-  geom_point(aes(x = p, y = value * p^2)) +
-  facet_wrap(~metric, scales = "free") + 
+ggplot(
+  res_long |>
+    filter(metric %in% paste0(metric_name, c("K")))
+      |> filter(p>500)
+  ) +
+  geom_point(aes(x = p, y = value * log(p)), shape = 1) +
+  facet_wrap(~ s1, scales = "free") + 
   scale_y_log10() + 
-  scale_x_log10() +
+  # scale_x_log10() +
   labs(x = "Image Dimension", y = "Estimation Error") +
   theme_bw()
