@@ -1,4 +1,3 @@
-
 library(fda)
 library(Matrix)
 library(rTensor)
