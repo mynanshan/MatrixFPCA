@@ -9,8 +9,8 @@ gen_data_simple <- function(
   nt = 51, t_range = c(0,1),
   sampling_ratio = NULL,
   sig = 0,
-  eigvalSet = 1,
-  eigvecSet = 1 
+  eigvecSet = 1,
+  eigvalSet = 1 
 ) {
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
