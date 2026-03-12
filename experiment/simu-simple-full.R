@@ -50,6 +50,10 @@ parser$add_argument("-rt", "--rank_time",
   type = "integer", default = 5,
   help = "Rank of the time dimension"
 )
+parser$add_argument("-nb", "--nbasis",
+  type = "integer", default = 5,
+  help = "Number of basis functions."
+)
 parser$add_argument("-set", "--data_set",
   type = "integer", default = 1,
   help = "Which data generation settings."
@@ -75,6 +79,7 @@ sr2 <- s2 * s_unit
 p <- args[["d_row"]]
 q <- args[["d_col"]]
 npc_time = args[["rank_time"]]
+nbasis = args[["nbasis"]]
 eigset = args[["data_set"]]
 seed0 <- args[["seed0"]] - 1
 nrepeat <- args[["repeat"]]
@@ -110,7 +115,7 @@ header <- c(
   "mseU", "mseV", "mseK",
   "relmseU", "relmseV", "relmseK",
   "maxdiffU", "maxdiffV", "maxdiffK",
-  "msePhi", "msePsi", "mseRho",
+  "msePhi", "msePsi", "mseTheta",
   "mseX", "relmseX",
   "time"
 )
@@ -166,7 +171,7 @@ eig_obj = match_signs.matfeigen(eig_obj, eig_true)
 eig_obj_trunc = trunc.matfeigen(eig_obj)
 r_row = min(ncol(eig_obj_trunc$funcs$Phi), ncol(eig_true$funcs$Phi))
 r_col = min(ncol(eig_obj_trunc$funcs$Psi), ncol(eig_true$funcs$Psi))
-r_time = min(ncol(eig_obj_trunc$funcs$Rho), ncol(eig_true$funcs$Rho))
+r_time = min(ncol(eig_obj_trunc$funcs$Theta), ncol(eig_true$funcs$Theta))
 
 # estimates FPC scores
 scores_hat = get_matfpca_scores(data, eig_obj_trunc)
@@ -217,7 +222,7 @@ output <- c(
   maxdiffK |> round(8),
   mean((eig_obj_trunc$funcs$Phi - eig_true$funcs$Phi[,1:r_row])^2) |> round(8),
   mean((eig_obj_trunc$funcs$Psi - eig_true$funcs$Psi[,1:r_col])^2) |> round(8),
-  mean((eig_obj_trunc$funcs$Rho[,1:r_time] - eig_true$funcs$Rho[,1:r_time])^2) |> round(8),
+  mean((eig_obj_trunc$funcs$Theta[,1:r_time] - eig_true$funcs$Theta[,1:r_time])^2) |> round(8),
   mean((X_hat@data - X_true@data)^2) |> round(8),
   (mean((X_hat@data - X_true@data)^2) / mean(X_true@data^2)) |> round(8),
   as.numeric(time_end - time_start) |> round(3)

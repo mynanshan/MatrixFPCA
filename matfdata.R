@@ -1,4 +1,3 @@
-
 # Matrix-valued Functional Data -------------------------------------------
 
 create_matrix_funcdata_grid = function(X, t_grid) {
@@ -162,7 +161,7 @@ get_subj_times.matfdata.irreg = function(data, i) {
 
 # Cov. and Eigen. of Matrix-valued FuncData -----------------------------------
 
-create_matrix_covfunc = function(U, V, K, t_grid) {
+create_matrix_covfunc = function(U, V, K, t_grid, sig2 = 0) {
   # validate t
   stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
   
@@ -173,56 +172,59 @@ create_matrix_covfunc = function(U, V, K, t_grid) {
   stopifnot(nrow(K) == length(t_grid))
   
   # formulate object
-  obj = list(U = U, V = V, K = K, t_grid = t_grid,
-    vdim = c(nrow(U), nrow(V)))
+  obj = list(
+    U = U, V = V, K = K, t_grid = t_grid,
+    vdim = c(nrow(U), nrow(V)),
+    sig2 = sig2
+  )
   class(obj) <- c("matfcov")
   return(obj)
 }
 
-create_matrix_eigfunc = function(Phi, Psi, Rho, t_grid) {
+create_matrix_eigfunc = function(Phi, Psi, Theta, t_grid) {
   # validate t
   stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
 
-  # validate Phi, Psi, Rho
-  stopifnot(nrow(Rho) == length(t_grid))
+  # validate Phi, Psi, Theta
+  stopifnot(nrow(Theta) == length(t_grid))
 
   # formulate object
-  obj = list(Phi = Phi, Psi = Psi, Rho = Rho, t_grid = t_grid,
+  obj = list(Phi = Phi, Psi = Psi, Theta = Theta, t_grid = t_grid,
     vdim = c(nrow(Phi), nrow(Psi)))
   class(obj) <- c("matfeigf")
   return(obj)
 }
 
-create_matrix_eigval = function(lam_phi, lam_psi, lam_rho) {
+create_matrix_eigval = function(lam_phi, lam_psi, lam_theta) {
 
-  # validate lam_phi, lam_psi, lam_rho
+  # validate lam_phi, lam_psi, lam_theta
   lam_phi = as.vector(lam_phi)
   lam_psi = as.vector(lam_psi)
-  lam_rho = as.vector(lam_rho)
+  lam_theta = as.vector(lam_theta)
 
   # formulate object
-  obj = list(lam_phi = lam_phi, lam_psi = lam_psi, lam_rho = lam_rho)
+  obj = list(lam_phi = lam_phi, lam_psi = lam_psi, lam_theta = lam_theta)
   class(obj) <- c("matfeigval")
   return(obj)
 }
 
 create_matrix_eigobj = function(
-    Phi, Psi, Rho, lam_phi, lam_psi, lam_rho, t_grid) {
+    Phi, Psi, Theta, lam_phi, lam_psi, lam_theta, t_grid) {
   # validate t
   stopifnot(is.vector(t_grid) && !is.unsorted(t_grid))
 
-  # validate Phi, Psi, Rho
-  stopifnot(nrow(Rho) == length(t_grid))
+  # validate Phi, Psi, Theta
+  stopifnot(nrow(Theta) == length(t_grid))
   
   # validate Lam
   stopifnot(ncol(Phi) == length(lam_phi))
   stopifnot(ncol(Psi) == length(lam_psi))
-  stopifnot(ncol(Rho) == length(lam_rho))
+  stopifnot(ncol(Theta) == length(lam_theta))
 
   # formulate object
   obj = list(
-    funcs = create_matrix_eigfunc(Phi, Psi, Rho, t_grid),
-    values = create_matrix_eigval(lam_phi, lam_psi, lam_rho) 
+    funcs = create_matrix_eigfunc(Phi, Psi, Theta, t_grid),
+    values = create_matrix_eigval(lam_phi, lam_psi, lam_theta) 
   )
   class(obj) <- c("matfeigen")
   return(obj)
@@ -257,7 +259,7 @@ evalf.matfcov = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
 evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
   stopifnot(is(f, "matfeigf"))
   if (is.null(t) && is.null(t_idx)) {
-    Rho = f$Rho
+    Theta = f$Theta
   } else {
     if (!is.null(t)) {
       t = sort(as.vector(t))
@@ -270,9 +272,9 @@ evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
       stopifnot(is.integer(t_idx))
       t_idx = sort(t_idx)
     }
-    Rho = f$Rho[t_idx, , drop=FALSE]
+    Theta = f$Theta[t_idx, , drop=FALSE]
   }
-  return(Rho %x% f$Psi %x% f$Phi)
+  return(Theta %x% f$Psi %x% f$Phi)
 }
 
 
@@ -280,7 +282,7 @@ evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
 
 get_eigval_tnsr.matfeigval = function(eigval) {
   stopifnot(is(eigval, "matfeigval"))
-  return(eigval$lam_phi %o% eigval$lam_psi %o% eigval$lam_rho)
+  return(eigval$lam_phi %o% eigval$lam_psi %o% eigval$lam_theta)
 }
 
 eigen.matfcov = function(C) {
@@ -301,7 +303,7 @@ eigen.matfcov = function(C) {
 match_signs.matfeigf = function(eigf, eigf0) {
   stopifnot(is(eigf, "matfeigf"))
   stopifnot(is(eigf0, "matfeigf"))
-  for (d in c("Phi", "Psi", "Rho")) {
+  for (d in c("Phi", "Psi", "Theta")) {
     if (ncol(eigf[[d]]) > ncol(eigf0[[d]])) {
       message(
         "More eigenfunctions in the target than in the reference.\n",
@@ -326,14 +328,14 @@ match_signs.matfeigen = function(eig, eig0) {
 .trunc.matfeigen = function(eig, I, J, K) {
   p = nrow(eig$Phi)
   q = nrow(eig$Psi)
-  nt = nrow(eig$Rho)
+  nt = nrow(eig$Theta)
   obj = create_matrix_eigobj(
     eig$funcs$Phi[, 1:I, drop=FALSE],
     eig$funcs$Psi[, 1:J, drop=FALSE],
-    eig$funcs$Rho[, 1:K, drop=FALSE],
+    eig$funcs$Theta[, 1:K, drop=FALSE],
     eig$values$lam_phi[1:I],
     eig$values$lam_psi[1:J],
-    eig$values$lam_rho[1:K],
+    eig$values$lam_theta[1:K],
     eig$funcs$t_grid
   )
   return(obj)
@@ -346,13 +348,13 @@ trunc.matfeigen = function(
   stopifnot(pve <= 1 && pve > 0)
   p = nrow(eig$funcs$Phi)
   q = nrow(eig$funcs$Psi)
-  nt = nrow(eig$funcs$Rho)
+  nt = nrow(eig$funcs$Theta)
   rmax_phi = ncol(eig$funcs$Phi)
   rmax_psi = ncol(eig$funcs$Psi)
-  rmax_rho = ncol(eig$funcs$Rho)
+  rmax_theta = ncol(eig$funcs$Theta)
   stopifnot(is.null(I) || (is.integer(I) && I <= rmax_phi))
   stopifnot(is.null(J) || (is.integer(J) && J <= rmax_psi))
-  stopifnot(is.null(K) || (is.integer(K) && K <= rmax_rho))
+  stopifnot(is.null(K) || (is.integer(K) && K <= rmax_theta))
   
   # if given rank
   if (!is.null(I) && !is.null(J) && !is.null(K)) {
@@ -366,7 +368,7 @@ trunc.matfeigen = function(
   curr_pve = eigval_tnsr[1,1,1] / total_var
   # TODO: allow user to partially specify (I, J, K)
   while (curr_pve < pve) {
-    if (all(r >= c(rmax_phi, rmax_psi, rmax_rho))) {
+    if (all(r >= c(rmax_phi, rmax_psi, rmax_theta))) {
       stop("Max rank reached. Something wrong happened")
     }
     var_incrs = c(
@@ -379,7 +381,7 @@ trunc.matfeigen = function(
         sum(eigval_tnsr[1:r[1], r[2] + 1, 1:r[3]])
       ),
       ifelse(
-        r[3] >= rmax_rho, 0,
+        r[3] >= rmax_theta, 0,
         sum(eigval_tnsr[1:r[1], 1:r[2], r[3] + 1])
       )
     )

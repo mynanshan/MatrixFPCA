@@ -9,7 +9,7 @@ pa = par(no.readonly = TRUE)
 source("matfdata.R")
 source("matfpca.R")
 source("plot_utils.R")
-source("experiment/gendata-simple.R")
+source(file.path("experiment", "gendata-simple.R"))
 
 # Specify the number of cores to use
 # num_cores <- 4
@@ -18,7 +18,7 @@ source("experiment/gendata-simple.R")
 # doParallel::registerDoParallel(cl)
 
 num_cores <- RhpcBLASctl::blas_get_num_procs()
-RhpcBLASctl::blas_set_num_threads(num_cores - 2)
+RhpcBLASctl::blas_set_num_threads(6 - 2)
 
 # Data Generation ---------------------------------------------------------
 
@@ -26,16 +26,18 @@ RhpcBLASctl::blas_set_num_threads(num_cores - 2)
 # a small number of "rank-one" eigenfunctions
 
 # dimension and temporal space
-n = 20 # n sample
-p = 200  # dim row
-q = 200  # dim column
+n = 30 # n sample
+p = 50  # dim row
+q = 50  # dim column
 nt = 50 + 1 # num time points
 t_range = c(0,1)
 
 # rank settings
 # NOTE: set npc == dimension to ensure full-rank covariances
 npc_row = p
+# npc_row = 5
 npc_col = q
+# npc_col = 5
 npc_time = 3
 
 # sparse irregular sampling
@@ -52,7 +54,9 @@ genData <- gen_data_simple(
   n, p, q,
   npc_row, npc_col, npc_time,
   nt, t_range,
-  sampling_ratio
+  sig = 1e-1,
+  sampling_ratio,
+  eigvecSet = 2
 )
 
 data <- genData$data
@@ -63,68 +67,91 @@ eig_true <- genData$eig
 
 # Estimation --------------------------------------------------------------
 
-cov_hat = fit_matfcov(data, wScheme = "OBS")
-
-# temporal scatter points
-cov_points = do.call(
-  rbind,
-  lapply(
-    data$t_idx_list, \(tid) {
-      expand.grid(s=data$t_grid[tid], t=data$t_grid[tid])
-    }
-  )
+cobj_idt <- fit_matfcov(
+  data, wScheme = "identity", noise = TRUE, nbasis = 21, maxIter = 1
 )
-plot(cov_points$s, cov_points$t,
-  xlab="s", ylab="t", main="Time points",
-  xlim=range(data$t_grid), ylim=range(data$t_grid))
+cov_idt <- cobj_idt$C
+
+cobj_inv <- fit_matfcov(
+  data, wScheme = "invcov", noise = TRUE, nbasis = 21,
+  maxIter = 2
+)
+cov_inv <- cobj_inv$C
+
+cobj_opt <- fit_matfcov(
+  data, wScheme = "optimal", noise = TRUE, nbasis = 21,
+  maxIter = 2, opwIter = 3
+)
+cov_opt <- cobj_opt$C
+
+cat(
+  ">>>>> Weighting scheme: identity\n",
+  "Rel. MSE (U): ", matFNorm2(cov_idt$U - cov_true$U) / matFNorm2(cov_true$U), "\n",
+  "Rel. MSE (V): ", matFNorm2(cov_idt$V - cov_true$V) / matFNorm2(cov_true$V), "\n",
+  "Rel. MSE (K): ", fun2dNorm2(cov_idt$K - cov_true$K, cov_true$t_grid) / fun2dNorm2(cov_true$K, cov_true$t_grid), "\n",
+  "Rel. MSE (C): ", matfcovDiffNorm2(cov_idt, cov_true) / matfcovNorm2(cov_true),
+  sep = ""
+)
+cat(
+  ">>>>> Weighting scheme: inv. cov.\n",
+  "Rel. MSE (U): ", matFNorm2(cov_inv$U - cov_true$U) / matFNorm2(cov_true$U), "\n",
+  "Rel. MSE (V): ", matFNorm2(cov_inv$V - cov_true$V) / matFNorm2(cov_true$V), "\n",
+  "Rel. MSE (K): ", fun2dNorm2(cov_inv$K - cov_true$K, cov_true$t_grid) / fun2dNorm2(cov_true$K, cov_true$t_grid), "\n",
+  "Rel. MSE (C): ", matfcovDiffNorm2(cov_inv, cov_true) / matfcovNorm2(cov_true),
+  sep = ""
+)
+cat(
+  ">>>>> Weighting scheme: optimal\n",
+  "Rel. MSE (U): ", matFNorm2(cov_opt$U - cov_true$U) / matFNorm2(cov_true$U), "\n",
+  "Rel. MSE (V): ", matFNorm2(cov_opt$V - cov_true$V) / matFNorm2(cov_true$V), "\n",
+  "Rel. MSE (K): ", fun2dNorm2(cov_opt$K - cov_true$K, cov_true$t_grid) / fun2dNorm2(cov_true$K, cov_true$t_grid), "\n",
+  "Rel. MSE (C): ", matfcovDiffNorm2(cov_opt, cov_true) / matfcovNorm2(cov_true),
+  sep = ""
+)
 
 
-# evaluate cov estimation
-# mean((evalf.matfcov(cov_hat) - evalf.matfcov(cov_true))^2)
-mean((cov_hat$U - cov_true$U)^2) / mean((cov_true$U)^2)
-mean((cov_hat$V - cov_true$V)^2) / mean((cov_true$V)^2)
-mean((cov_hat$K - cov_true$K)^2) / mean((cov_true$K)^2)
+# par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
+# rangeK <- range(c(cov_true$K, cov_hat$K))
+# tile_plot.matrix(cov_true$K, zlim=rangeK)
+# mtext("K", side=2, line=1.5)
+# mtext("True", side=3, line=1)
+# tile_plot.matrix(cov_hat$K)
+# mtext("Estimate", side=3, line=1)
+# rangeU <- range(c(cov_true$U, cov_hat$U))
+# tile_plot.matrix(cov_true$U, zlim=rangeU)
+# mtext("U", side=2, line=1.5)
+# tile_plot.matrix(cov_hat$U)
+# rangeV <- range(c(cov_true$V, cov_hat$V))
+# tile_plot.matrix(cov_true$V, zlim=rangeV)
+# mtext("V", side=2, line=1.5)
+# tile_plot.matrix(cov_hat$V)
+# par(pa)
 
+# # evaluate eigen estimation
+# eig_obj = eigen.matfcov(cov_hat)
+# eig_obj = match_signs.matfeigen(eig_obj, eig_true)
+# eig_obj_trunc = trunc.matfeigen(eig_obj)
+# r_row = ncol(eig_obj_trunc$funcs$Phi)
+# r_col = ncol(eig_obj_trunc$funcs$Psi)
+# r_time = min(ncol(eig_obj_trunc$funcs$Theta), ncol(eig_true$funcs$Theta))
 
-par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
-tile_plot.matrix(cov_true$K)
-mtext("K", side=2, line=1.5)
-mtext("True", side=3, line=1)
-tile_plot.matrix(cov_hat$K)
-mtext("Estimate", side=3, line=1)
-tile_plot.matrix(cov_true$U)
-mtext("U", side=2, line=1.5)
-tile_plot.matrix(cov_hat$U)
-tile_plot.matrix(cov_true$V)
-mtext("V", side=2, line=1.5)
-tile_plot.matrix(cov_hat$V)
-par(pa)
+# par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
+# tile_plot.matrix(eig_true$funcs$Phi[,1:r_row,drop=F])
+# mtext(expression(Phi), side=2, line=1.5)
+# mtext("True", side=3, line=1)
+# tile_plot.matrix(eig_obj_trunc$funcs$Phi, xlab="t")
+# mtext("Estimate", side=3, line=1)
+# tile_plot.matrix(eig_true$funcs$Psi[,1:r_col,drop=F])
+# mtext(expression(Psi), side=2, line=1.5)
+# tile_plot.matrix(eig_obj_trunc$funcs$Psi, xlab="t")
+# tile_plot.matrix(eig_true$funcs$Theta[,1:r_time,drop=F])
+# mtext(expression(Theta), side=2, line=1.5)
+# tile_plot.matrix(eig_obj_trunc$funcs$Theta[,1:r_time,drop=F], xlab="t")
+# par(pa)
 
-# evaluate eigen estimation
-eig_obj = eigen.matfcov(cov_hat)
-eig_obj = match_signs.matfeigen(eig_obj, eig_true)
-eig_obj_trunc = trunc.matfeigen(eig_obj)
-r_row = ncol(eig_obj_trunc$funcs$Phi)
-r_col = ncol(eig_obj_trunc$funcs$Psi)
-r_time = min(ncol(eig_obj_trunc$funcs$Rho), ncol(eig_true$funcs$Rho))
-
-par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
-tile_plot.matrix(eig_true$funcs$Phi[,1:r_row,drop=F])
-mtext(expression(Phi), side=2, line=1.5)
-mtext("True", side=3, line=1)
-tile_plot.matrix(eig_obj_trunc$funcs$Phi, xlab="t")
-mtext("Estimate", side=3, line=1)
-tile_plot.matrix(eig_true$funcs$Psi[,1:r_col,drop=F])
-mtext(expression(Psi), side=2, line=1.5)
-tile_plot.matrix(eig_obj_trunc$funcs$Psi, xlab="t")
-tile_plot.matrix(eig_true$funcs$Rho[,1:r_time,drop=F])
-mtext(expression(Rho), side=2, line=1.5)
-tile_plot.matrix(eig_obj_trunc$funcs$Rho[,1:r_time,drop=F], xlab="t")
-par(pa)
-
-mean((eig_obj_trunc$funcs$Phi - eig_true$funcs$Phi[,1:r_row])^2)
-mean((eig_obj_trunc$funcs$Psi - eig_true$funcs$Psi[,1:r_col])^2)
-mean((eig_obj_trunc$funcs$Rho[,1:r_time] - eig_true$funcs$Rho[,1:r_time])^2)
+# mean((eig_obj_trunc$funcs$Phi - eig_true$funcs$Phi[,1:r_row])^2)
+# mean((eig_obj_trunc$funcs$Psi - eig_true$funcs$Psi[,1:r_col])^2)
+# mean((eig_obj_trunc$funcs$Theta[,1:r_time] - eig_true$funcs$Theta[,1:r_time])^2)
 
 
 # estimate scores and recover the process
@@ -159,8 +186,3 @@ mean((eig_obj_trunc$funcs$Rho[,1:r_time] - eig_true$funcs$Rho[,1:r_time])^2)
 #   }
 # }
 # par(pa)
-
-# sim studies:
-# - other methods (baseline) 
-# - different sample size
-# - misspecified?

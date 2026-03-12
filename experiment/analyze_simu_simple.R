@@ -136,7 +136,7 @@ ggplot(
     filter(metric %in% paste0(metric_name, c("K")))
       |> filter(p>500)
   ) +
-  geom_point(aes(x = p, y = value * log(p)), shape = 1) +
+  geom_point(aes(x = p, y = value), shape = 1) +
   facet_wrap(~ s1, scales = "free") + 
   scale_y_log10() + 
   # scale_x_log10() +

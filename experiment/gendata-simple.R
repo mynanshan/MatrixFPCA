@@ -8,7 +8,9 @@ gen_data_simple <- function(
   npc_row = p, npc_col = q, npc_time = 3,
   nt = 51, t_range = c(0,1),
   sampling_ratio = NULL,
-  eigset = 1
+  sig = 0,
+  eigvalSet = 1,
+  eigvecSet = 1 
 ) {
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
@@ -18,43 +20,49 @@ gen_data_simple <- function(
   # dimension 3: time
   
   # eigenfunction
-  # FIXME: when npc < corresponding dimension
+  # NOTE: when npc < corresponding dimension
   # the covariance matrix is singular
   # then following procedure will be incorrect
   npc = npc_col * npc_row * npc_time
-  Phi = pracma::randortho(p)[,1:npc_row,drop=FALSE]
-  Psi = pracma::randortho(q)[,1:npc_col,drop=FALSE]
-  rho_funcs = function(x, npc) fda::fourier(x, nbasis = npc)
-  # FIXME: nt fourier bases evaluated on the nt-grid gives a constant zero basis.
-  rho_mat = rho_funcs(t_grid, npc_time)
+  if (eigvecSet == 1) {
+    Phi = pracma::randortho(p)[,1:npc_row,drop=FALSE]
+    Psi = pracma::randortho(q)[,1:npc_col,drop=FALSE]
+  } else if (eigvecSet == 2) {
+    Phi = fda::fourier(
+      seq(0,1,length.out=p), nbasis = npc_row+1
+    )[,2:(npc_row+1)]
+    Psi = fda::fourier(
+      seq(0,1,length.out=q), nbasis = npc_col+1
+    )[,2:(npc_col+1)]
+    Phi = qr.Q(qr(Phi))
+    Psi = qr.Q(qr(Psi))
+  }
+  theta_funcs = function(x, npc) fda::fourier(x, nbasis = npc)
+  theta_mat = theta_funcs(t_grid, npc_time)
   
   # eigenvalues
-  if (eigset == 1) {
+  if (eigvalSet == 1) {
     lam_phi = seq(2, 0.2, length.out=npc_row)
     lam_psi = seq(2, 0.2, length.out=npc_col)
-  } else if (eigset == 2) {
+  } else if (eigvalSet == 2) {
     lam_phi = 2 * (1:npc_row)^(-1.2)
     lam_psi = 2 * (1:npc_col)^(-1.3)
   }
-  lam_rho = 2 * (1:npc_time)^(-2.0)
+  lam_theta = 2 * (1:npc_time)^(-2.0)
+
+  scale_U <- sum(lam_phi) / p
+  scale_V <- sum(lam_psi) / q
+  lam_phi <- lam_phi / scale_U
+  lam_psi <- lam_psi / scale_V
+  lam_theta <- lam_theta * scale_U * scale_V
   
-  eig_true = create_matrix_eigobj(Phi, Psi, rho_mat, lam_phi, lam_psi, lam_rho, t_grid)
+  eig_true = create_matrix_eigobj(Phi, Psi, theta_mat, lam_phi, lam_psi, lam_theta, t_grid)
   
   U = Phi %*% diag(lam_phi,npc_row,npc_row) %*% t(Phi)
   V = Psi %*% diag(lam_psi,npc_col,npc_col) %*% t(Psi)
-  K = rho_mat %*% diag(lam_rho,npc_time,npc_time) %*% t(rho_mat)
+  K = theta_mat %*% diag(lam_theta,npc_time,npc_time) %*% t(theta_mat)
   
-  # re-scale covariances
-  scale_U <- sum(lam_phi) / p
-  scale_V <- sum(lam_psi) / q
-  U <- U / scale_U
-  V <- V / scale_V
-  K <- K * scale_U * scale_V
-  lam_phi <- lam_phi / scale_U
-  lam_psi <- lam_psi / scale_V
-  lam_rho <- lam_rho * scale_U * scale_V
-  
-  cov_true = create_matrix_covfunc(U, V, K, t_grid)
+  cov_true = create_matrix_covfunc(U, V, K, t_grid, sig^2)
   
   # FPC scores
   Z = rnorm(n * npc) |>
@@ -64,12 +72,12 @@ gen_data_simple <- function(
     Z, list(
       diag(sqrt(lam_phi), npc_row, npc_row),
       diag(sqrt(lam_psi), npc_col, npc_col), 
-      diag(sqrt(lam_rho), npc_time, npc_time)
+      diag(sqrt(lam_theta), npc_time, npc_time)
     ), c(2:4)
   )
   
   # tensor X
-  X = ttl(scores, list(Phi, Psi, rho_mat), c(2:4))
+  X = ttl(scores, list(Phi, Psi, theta_mat), c(2:4))
   
   if (is.null(sampling_ratio)) {
     # data on a dense grid
@@ -93,10 +101,18 @@ gen_data_simple <- function(
       t_idx_sampler, ms, n = nt,
       interval_min = interval_min
     )
+
+    X_list <- lapply(1:n, function(i) X[i,,,t_idx_list[[i]]])
+    if (sig > 0) {
+      for (i in seq_along(X_list)) {
+        X_list[[i]] <- X_list[[i]] + rnorm(prod(dim(X_list[[i]])), 0, sig)
+      }
+    }
     
     data = create_matrix_funcdata_irreg(
-      X_list = lapply(1:n, function(i) X[i,,,t_idx_list[[i]]]),
-      t_grid = t_grid, t_idx_list = t_idx_list
+      X_list = X_list,
+      t_grid = t_grid,
+      t_idx_list = t_idx_list
     )
   }
   
