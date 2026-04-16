@@ -69,7 +69,7 @@ parser$add_argument("-set", "--eigset",
   type = "integer", default = 2,
   help = "Which data generation settings."
 )
-parser$add_argument("-scd", "--scores-distr",
+parser$add_argument("-scd", "--scores_distr",
   type = "character", default = "normal",
   choices = c("normal", "uniform", "beta32", "t5"),
   help = "Distribution of the FPC scores."
