@@ -26,7 +26,7 @@ for ((i=1; i<=reps; i++)); do
         --nodes=1 \
         --ntasks=1 \
         --cpus-per-task=2 \
-        --mem="16G" \
+        --mem="64G" \
         "$SCRIPT" \
         --n_subjects "$N" \
         --d_row "$p" \
@@ -38,47 +38,47 @@ for ((i=1; i<=reps; i++)); do
 done
 
 # check noise level
-p=30
-distr="normal"
-for ((i=1; i<=reps; i++)); do
-    for sig in 0 0.1 0.5; do
-      sbatch \
-        --job-name="simu_n${N}_p${p}_sig${sig}_sd${i}" \
-        --output="logs/simu_n${N}_p${p}_sig${sig}_sd${i}_%j.out" \
-        --time="1:00:00" \
-        --nodes=1 \
-        --ntasks=1 \
-        --cpus-per-task=2 \
-        --mem="16G" \
-        "$SCRIPT" \
-        --n_subjects "$N" \
-        --d_row "$p" \
-        --d_col "$p" \
-        --noise_lvl "$sig" \
-        --scores_distr "$distr" \
-        --seed "$i"
-    done
-done
-
-# check distr
-p=30
-sig=0.1
-for ((i=1; i<=reps; i++)); do
-    for distr in "normal" "uniform" "beta32" "t5"; do
-      sbatch \
-        --job-name="simu_n${N}_p${p}_sig${sig}_sd${i}" \
-        --output="logs/simu_n${N}_p${p}_sig${sig}_sd${i}_%j.out" \
-        --time="1:00:00" \
-        --nodes=1 \
-        --ntasks=1 \
-        --cpus-per-task=2 \
-        --mem="16G" \
-        "$SCRIPT" \
-        --n_subjects "$N" \
-        --d_row "$p" \
-        --d_col "$p" \
-        --noise_lvl "$sig" \
-        --scores_distr "$distr" \
-        --seed "$i"
-    done
-done
+# p=30
+# distr="normal"
+# for ((i=1; i<=reps; i++)); do
+#     for sig in 0 0.1 0.5; do
+#       sbatch \
+#         --job-name="simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}" \
+#         --output="logs/simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}_%j.out" \
+#         --time="1:00:00" \
+#         --nodes=1 \
+#         --ntasks=1 \
+#         --cpus-per-task=2 \
+#         --mem="16G" \
+#         "$SCRIPT" \
+#         --n_subjects "$N" \
+#         --d_row "$p" \
+#         --d_col "$p" \
+#         --noise_lvl "$sig" \
+#         --scores_distr "$distr" \
+#         --seed "$i"
+#     done
+# done
+# 
+# # check distr
+# p=30
+# sig=0.1
+# for ((i=1; i<=reps; i++)); do
+#     for distr in "normal" "uniform" "beta32" "t5"; do
+#       sbatch \
+#         --job-name="simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}" \
+#         --output="logs/simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}_%j.out" \
+#         --time="1:00:00" \
+#         --nodes=1 \
+#         --ntasks=1 \
+#         --cpus-per-task=2 \
+#         --mem="16G" \
+#         "$SCRIPT" \
+#         --n_subjects "$N" \
+#         --d_row "$p" \
+#         --d_col "$p" \
+#         --noise_lvl "$sig" \
+#         --scores_distr "$distr" \
+#         --seed "$i"
+#     done
+# done
