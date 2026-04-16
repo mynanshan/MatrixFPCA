@@ -20,8 +20,8 @@ distr="normal"
 for ((i=1; i<=reps; i++)); do
   for p in 10 30 50; do
       sbatch \
-        --job-name="simu_n${N}_p${p}_sig${sig}_d${distr}_sd${seed}" \
-        --output="logs/simu_n${N}_p${p}_sig${sig}_d${distr}_sd${seed}_%j.out" \
+        --job-name="simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}" \
+        --output="logs/simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}_%j.out" \
         --time="1:00:00" \
         --nodes=1 \
         --ntasks=1 \
@@ -43,8 +43,8 @@ distr="normal"
 for ((i=1; i<=reps; i++)); do
     for sig in 0 0.1 0.5; do
       sbatch \
-        --job-name="simu_n${N}_p${p}_sig${sig}_sd${seed}" \
-        --output="logs/simu_n${N}_p${p}_sig${sig}_sd${seed}_%j.out" \
+        --job-name="simu_n${N}_p${p}_sig${sig}_sd${i}" \
+        --output="logs/simu_n${N}_p${p}_sig${sig}_sd${i}_%j.out" \
         --time="1:00:00" \
         --nodes=1 \
         --ntasks=1 \
@@ -66,8 +66,8 @@ sig=0.1
 for ((i=1; i<=reps; i++)); do
     for distr in "normal" "uniform" "beta32" "t5"; do
       sbatch \
-        --job-name="simu_n${N}_p${p}_sig${sig}_sd${seed}" \
-        --output="logs/simu_n${N}_p${p}_sig${sig}_sd${seed}_%j.out" \
+        --job-name="simu_n${N}_p${p}_sig${sig}_sd${i}" \
+        --output="logs/simu_n${N}_p${p}_sig${sig}_sd${i}_%j.out" \
         --time="1:00:00" \
         --nodes=1 \
         --ntasks=1 \
