@@ -10,7 +10,9 @@ set -euo pipefail
 #   n = number of subjects (default: 30)
 
 reps="${1:-100}"
+N="${2:-30}"
 SCRIPT="experiment/simu-simple.R"
+
 
 # check dimension
 sig=0.1
