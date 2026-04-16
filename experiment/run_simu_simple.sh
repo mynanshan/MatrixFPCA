@@ -25,8 +25,8 @@ for ((i=1; i<=reps; i++)); do
         --time="1:00:00" \
         --nodes=1 \
         --ntasks=1 \
-        --cpus-per-task=4 \
-        --mem-per-cpu="2G" \
+        --cpus-per-task=2 \
+        --mem="16G" \
         "$SCRIPT" \
         --n_subjects "$N" \
         --d_row "$p" \
@@ -48,8 +48,8 @@ for ((i=1; i<=reps; i++)); do
         --time="1:00:00" \
         --nodes=1 \
         --ntasks=1 \
-        --cpus-per-task=4 \
-        --mem-per-cpu="2G" \
+        --cpus-per-task=2 \
+        --mem="16G" \
         "$SCRIPT" \
         --n_subjects "$N" \
         --d_row "$p" \
@@ -71,8 +71,8 @@ for ((i=1; i<=reps; i++)); do
         --time="1:00:00" \
         --nodes=1 \
         --ntasks=1 \
-        --cpus-per-task=4 \
-        --mem-per-cpu="2G" \
+        --cpus-per-task=2 \
+        --mem="16G" \
         "$SCRIPT" \
         --n_subjects "$N" \
         --d_row "$p" \
