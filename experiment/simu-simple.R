@@ -359,7 +359,7 @@ if (ifsave) {
 
   header <- c(
     "method", "seed", "weight",
-    "n", "p", "q", "sig", "s1", "s2", "nt",
+    "n", "p", "q", "sig", "distr", "s1", "s2", "nt",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC"
   )
@@ -378,19 +378,19 @@ if (ifsave) {
 
   out_idt <- c(
     "MatFPCA", seed, "identity", 
-    n, p, q, sig, s1, s2, nt,
+    n, p, q, sig, scores_distr, s1, s2, nt,
     formatter(sseU_idt), formatter(sseV_idt), formatter(iseK_idt), formatter(siseC_idt),
     formatter(relsseU_idt), formatter(relsseV_idt), formatter(reliseK_idt), formatter(relsiseC_idt)
   )
   out_inv <- c(
     "MatFPCA", seed, "invcov", 
-    n, p, q, sig, s1, s2, nt,
+    n, p, q, sig, scores_distr, s1, s2, nt,
     formatter(sseU_inv), formatter(sseV_inv), formatter(iseK_inv), formatter(siseC_inv),
     formatter(relsseU_inv), formatter(relsseV_inv), formatter(reliseK_inv), formatter(relsiseC_inv)
   )
   out_opt <- c(
     "MatFPCA", seed, "optimal", 
-    n, p, q, sig, s1, s2, nt,
+    n, p, q, sig, scores_distr, s1, s2, nt,
     formatter(sseU_opt), formatter(sseV_opt), formatter(iseK_opt), formatter(siseC_opt),
     formatter(relsseU_opt), formatter(relsseV_opt), formatter(reliseK_opt), formatter(relsiseC_opt)
   )
