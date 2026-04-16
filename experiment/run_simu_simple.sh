@@ -37,7 +37,7 @@ for ((i=1; i<=reps; i++)); do
     done
 done
 
-check noise level
+# check noise level
 p=30
 distr="normal"
 for ((i=1; i<=reps; i++)); do
