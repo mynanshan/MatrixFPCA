@@ -14,7 +14,7 @@ parser <- argparse::ArgumentParser(
 
 # Add arguments
 parser$add_argument("-n", "--n_subjects",
-  type = "integer", default = 30,
+  type = "integer", default = 20,
   help = "Number of subjects"
 )
 parser$add_argument("-nt", "--n_time_points",
@@ -38,11 +38,11 @@ parser$add_argument("-s2", "--s_obs_max",
   help = "Max sampling ratio, 1 unit for 0.05."
 )
 parser$add_argument("-p", "--d_row",
-  type = "integer", default = 50,
+  type = "integer", default = 30,
   help = "Dimension of rows"
 )
 parser$add_argument("-q", "--d_col",
-  type = "integer", default = 50,
+  type = "integer", default = 30,
   help = "Dimension of columns"
 )
 parser$add_argument("-sig", "--noise_lvl",
@@ -69,6 +69,11 @@ parser$add_argument("-set", "--eigset",
   type = "integer", default = 2,
   help = "Which data generation settings."
 )
+parser$add_argument("-scd", "--scores-distr",
+  type = "character", default = "normal",
+  choices = c("normal", "uniform", "beta32", "t5"),
+  help = "Distribution of the FPC scores."
+)
 parser$add_argument("--seed",
   type = "integer", default = -1,
   help = "The base seed"
@@ -76,6 +81,10 @@ parser$add_argument("--seed",
 parser$add_argument("--save",
   type = "integer", default = ifelse(interactive(), 0, 1),
   help = "Whether to save the results"
+)
+parser$add_argument("--manual",
+  type = "integer", default = ifelse(interactive(), 1, 0),
+  help = "Whether allow manual change of settings."
 )
 
 args <- parser$parse_args()
@@ -107,16 +116,30 @@ npc_time <- min(max(rt, 1), nt)
 
 nbasis <- min(max(args[["nbasis"]], 1), nt)
 eigset <- args[["eigset"]]
+scores_distr <- args[["scores_distr"]]
 seed <- args[["seed"]]
 seed <- ifelse(seed < 0, ceiling(runif(1)*9999), seed)
 ifsave <- as.logical(args[["save"]])
 
+manual_mode <- as.logical(args$manual)
+
+if (manual_mode) {
+  scores_distr <- "t5"
+}
+
 cat(
   ">>>>>>>>>>> Settings <<<<<<<<<<< \n",
-  "seed=", seed, "\n",
-  "n=", n, "\n",
-  "p=", p, "\n",
-  "q=", q, "\n",
+  "seed =", seed, "\n",
+  "n =", n, "\n",
+  "p =", p, "\n",
+  "q =", q, "\n",
+  "sig =", sig, "\n",
+  "nt =", nt, "\n",
+  "nbasis=", nbasis, "\n",
+  "sr1 =", sr1, "\n",
+  "sr2 =", sr2, "\n",
+  "npc_row=", npc_row, "\n",
+  "npc_col=", npc_col, "\n",
   "npc_time=", npc_time, "\n"
 )
 

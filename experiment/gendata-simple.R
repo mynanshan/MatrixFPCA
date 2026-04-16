@@ -10,7 +10,8 @@ gen_data_simple <- function(
   sampling_ratio = NULL,
   sig = 0,
   eigvecSet = 1,
-  eigvalSet = 1 
+  eigvalSet = 1,
+  scores_distr = c("normal", "uniform", "beta32", "t5")
 ) {
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
@@ -65,7 +66,17 @@ gen_data_simple <- function(
   cov_true = create_matrix_covfunc(U, V, K, t_grid, sig^2)
   
   # FPC scores
-  Z = rnorm(n * npc) |>
+  scores_distr <- match.arg(scores_distr)
+  Z <- if (scores_distr == "normal") {
+    rnorm(n * npc)
+  } else if (scores_distr == "uniform") {
+    runif(n * npc, -1, 1) / sqrt(1 / 3)
+  } else if (scores_distr == "beta32") {
+    (rbeta(n * npc, 3, 2) - 0.6) * 5
+  } else if (scores_distr == "t5") {
+    rt(n * npc, 5) / sqrt(5 / 3)
+  }
+  Z <- Z |>
     array(dim=c(n, npc_col, npc_row, npc_time)) |> 
     as.tensor()
   scores = ttl(
