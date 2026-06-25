@@ -1,11 +1,4 @@
 #!/cvmfs/soft.computecanada.ca/easybuild/software/2023/x86-64-v4/Compiler/gcccore/r/4.5.0/bin/Rscript
-#SBATCH --job-name=simu-simple
-#SBATCH --output=logs/simu_simple_%j.out
-#SBATCH --time=1:00:00
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=4G
 
 # Read command line arguments
 parser <- argparse::ArgumentParser(

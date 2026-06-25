@@ -2,14 +2,19 @@
 
 set -euo pipefail
 
+module load r/4.5.0
+
 # Usage:
 #   experiment/run_simu_simple.sh [repetitions] [max_parallel]
 #   experiment/run_simu_simple.sh 2 4 --dry-run
 #
 # Defaults produce 19 configurations x 50 replicates = 950 array tasks,
 # throttled to at most 100 concurrently running tasks.
-
-export FLEXIBLAS=IMKL  # Compute Canada FlexiBLAS backend name for Intel MKL
+#
+# Local benchmarks of the largest configurations used about 0.55 GiB RAM and
+# 5-10 seconds on one CPU. The Slurm request below leaves headroom for slower
+# nodes, package startup, and heavy-tailed replicates without reserving a
+# second idle core or several unnecessary GiB of memory.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SIM_SCRIPT="${ROOT_DIR}/experiment/simu-simple.R"
@@ -17,6 +22,7 @@ RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/experiment/results}"
 MANIFEST_DIR="${RESULTS_DIR}/manifests"
 LOG_DIR="${ROOT_DIR}/logs"
 R_COMMAND="${R_COMMAND:-Rscript}"
+TIME_COMMAND="${TIME_COMMAND:-/usr/bin/time}"
 
 run_array_task() {
   local manifest="$1"
@@ -39,7 +45,17 @@ run_array_task() {
   echo "dependence=${dependence}, dependence_param=${dep_param}"
 
   cd "${ROOT_DIR}"
-  "${R_COMMAND}" "${SIM_SCRIPT}" \
+
+  # Keep every numerical backend within the one CPU allocated by Slurm.
+  export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+  export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+  export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+  export BLIS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+
+  # Compute Canada settings
+  export FLEXIBLAS=IMKL
+
+  "${TIME_COMMAND}" -v "${R_COMMAND}" "${SIM_SCRIPT}" \
     --n_subjects "${n}" \
     --n_time_points 51 \
     --s_obs_min 2 \
@@ -158,13 +174,17 @@ if [[ "${dry_run}" == "--dry-run" ]]; then
   exit 0
 fi
 
-sbatch \
+job_id="$(sbatch --parsable \
   --job-name="matfpca-simple" \
   --output="${LOG_DIR}/simu_simple_%A_%a.out" \
-  --time="2:00:00" \
+  --time="0:15:00" \
   --nodes=1 \
   --ntasks=1 \
-  --cpus-per-task=2 \
-  --mem="8G" \
+  --cpus-per-task=1 \
+  --mem="2G" \
   --array="0-$((task_count - 1))%${max_parallel}" \
-  "$0" --worker "${manifest}"
+  "$0" --worker "${manifest}")"
+
+echo "Submitted Slurm array ${job_id}."
+echo "After completion, audit actual use with:"
+echo "  sacct -j ${job_id} --units=M --format=JobID,State,Elapsed,AllocCPUS,ReqMem,MaxRSS"
