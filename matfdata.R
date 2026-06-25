@@ -13,7 +13,7 @@ create_matrix_funcdata_grid = function(X, t_grid) {
   # formulate object
   obj = list(X = X, t_grid = t_grid, vdim = dim(X)[2:3])
   class(obj) <- c("matfdata", "matfdata.grid")
-  return(obj)
+  obj
 }
 
 create_matrix_funcdata_irreg = function(
@@ -59,7 +59,7 @@ create_matrix_funcdata_irreg = function(
     in_mem = in_mem
   )
   class(obj) <- c("matfdata", "matfdata.irreg")
-  return(obj)
+  obj
 }
 
 # TODO: complete this
@@ -81,8 +81,7 @@ make_t_idx_list = function(
   } else {
     stop("NOT IMPLEMENTED")
   }
-  return(list(t_grid = t_grid,
-    t_idx_list = t_idx_list))
+  list(t_grid = t_grid, t_idx_list = t_idx_list)
 }
 
 get_t_list <- function(data) {
@@ -95,8 +94,8 @@ get_t_list <- function(data) {
 
 count_subj = function(data) UseMethod("count_subj")
 
-count_subj.matfdata.grid = function(data) return(dim(data$X)[1])
-count_subj.matfdata.irreg = function(data) return(length(data$X_list))
+count_subj.matfdata.grid = function(data) dim(data$X)[1]
+count_subj.matfdata.irreg = function(data) length(data$X_list)
 
 subset_subj = function(data, i) UseMethod("subset_subj")
 
@@ -152,13 +151,13 @@ get_subj_tnsr.matfdata.irreg = function(data, i, shape_check=TRUE) {
 get_subj_times = function(data, i) UseMethod("get_subj_times")
 
 get_subj_times.matfdata.grid = function(data, i) {
-  return(data$t_grid)
+  data$t_grid
 }
 
 get_subj_times.matfdata.irreg = function(data, i) {
   i = as.integer(i)
   stopifnot(length(i) == 1)
-  return(data$t_grid[data$t_idx_list[[i]]])
+  data$t_grid[data$t_idx_list[[i]]]
 }
 
 # Cov. and Eigen. of Matrix-valued FuncData -----------------------------------
@@ -180,7 +179,7 @@ create_matrix_covfunc = function(U, V, K, t_grid, sig2 = 0) {
     sig2 = sig2
   )
   class(obj) <- c("matfcov")
-  return(obj)
+  obj
 }
 
 create_matrix_eigfunc = function(Phi, Psi, Theta, t_grid) {
@@ -194,7 +193,7 @@ create_matrix_eigfunc = function(Phi, Psi, Theta, t_grid) {
   obj = list(Phi = Phi, Psi = Psi, Theta = Theta, t_grid = t_grid,
     vdim = c(nrow(Phi), nrow(Psi)))
   class(obj) <- c("matfeigf")
-  return(obj)
+  obj
 }
 
 create_matrix_eigval = function(lam_phi, lam_psi, lam_theta) {
@@ -207,7 +206,7 @@ create_matrix_eigval = function(lam_phi, lam_psi, lam_theta) {
   # formulate object
   obj = list(lam_phi = lam_phi, lam_psi = lam_psi, lam_theta = lam_theta)
   class(obj) <- c("matfeigval")
-  return(obj)
+  obj
 }
 
 create_matrix_eigobj = function(
@@ -229,7 +228,7 @@ create_matrix_eigobj = function(
     values = create_matrix_eigval(lam_phi, lam_psi, lam_theta) 
   )
   class(obj) <- c("matfeigen")
-  return(obj)
+  obj
 }
 
 
@@ -255,7 +254,7 @@ evalf.matfcov = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
     }
     K = f$K[t_idx, t_idx, drop=FALSE]
   }
-  return(K %x% f$V %x% f$U)
+  K %x% f$V %x% f$U
 }
 
 evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
@@ -276,7 +275,7 @@ evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
     }
     Theta = f$Theta[t_idx, , drop=FALSE]
   }
-  return(Theta %x% f$Psi %x% f$Phi)
+  Theta %x% f$Psi %x% f$Phi
 }
 
 
@@ -284,7 +283,7 @@ evalf.matfeigf = function(f, t=NULL, t_idx=NULL, tol=1e-15) {
 
 get_eigval_tnsr.matfeigval = function(eigval) {
   stopifnot(is(eigval, "matfeigval"))
-  return(eigval$lam_phi %o% eigval$lam_psi %o% eigval$lam_theta)
+  eigval$lam_phi %o% eigval$lam_psi %o% eigval$lam_theta
 }
 
 eigen.matfcov = function(C) {
@@ -299,7 +298,7 @@ eigen.matfcov = function(C) {
     eig_U$vectors, eig_V$vectors, eig_K$vectors / sqrt(int_factor),
     eig_U$values, eig_V$values, eig_K$values * int_factor, C$t_grid
   )
-  return(obj)
+  obj
 }
 
 match_signs.matfeigf = function(eigf, eigf0) {
@@ -317,14 +316,14 @@ match_signs.matfeigf = function(eigf, eigf0) {
       eigf[[d]][,idx] = -eigf[[d]][,idx]
     }
   }
-  return(eigf)
+  eigf
 }
 
 match_signs.matfeigen = function(eig, eig0) {
   stopifnot(is(eig, "matfeigen"))
   stopifnot(is(eig0, "matfeigen"))
   eig$funcs = match_signs.matfeigf(eig$funcs, eig0$funcs)
-  return(eig)
+  eig
 }
 
 .trunc.matfeigen = function(eig, I, J, K) {
@@ -340,7 +339,7 @@ match_signs.matfeigen = function(eig, eig0) {
     eig$values$lam_theta[1:K],
     eig$funcs$t_grid
   )
-  return(obj)
+  obj
 }
 
 trunc.matfeigen = function(
@@ -396,5 +395,5 @@ trunc.matfeigen = function(
     cat("Selected rank:", "Row =", r[1], "Col =", r[2], "Time =", r[3], "\n")
   }
   
-  return(.trunc.matfeigen(eig, r[1], r[2], r[3]))
+  .trunc.matfeigen(eig, r[1], r[2], r[3])
 }

@@ -16,7 +16,11 @@ module load r/4.5.0
 # nodes, package startup, and heavy-tailed replicates without reserving a
 # second idle core or several unnecessary GiB of memory.
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "${1:-}" == "--worker" ]]; then
+  ROOT_DIR="${3:?project root was not passed to the Slurm worker}"
+else
+  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 SIM_SCRIPT="${ROOT_DIR}/experiment/simu-simple.R"
 RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/experiment/results}"
 MANIFEST_DIR="${RESULTS_DIR}/manifests"
@@ -183,7 +187,7 @@ job_id="$(sbatch --parsable \
   --cpus-per-task=1 \
   --mem="2G" \
   --array="0-$((task_count - 1))%${max_parallel}" \
-  "$0" --worker "${manifest}")"
+  "$0" --worker "${manifest}" "${ROOT_DIR}")"
 
 echo "Submitted Slurm array ${job_id}."
 echo "After completion, audit actual use with:"
