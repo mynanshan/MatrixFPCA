@@ -7,6 +7,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=4G
 
+# TODO: change back to offdiag first then diag style
+
 # Read command line arguments
 parser <- argparse::ArgumentParser(
   description = "Determine the settings for this simple simulation."
@@ -124,7 +126,7 @@ ifsave <- as.logical(args[["save"]])
 manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
-  scores_distr <- "t5"
+  scores_distr <- "beta32"
 }
 
 cat(

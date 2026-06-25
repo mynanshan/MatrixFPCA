@@ -41,7 +41,7 @@ done
 p=30
 distr="normal"
 for ((i=1; i<=reps; i++)); do
-    for sig in 0 0.1 0.5; do
+    for sig in 0 0.5; do
       sbatch \
         --job-name="simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}" \
         --output="logs/simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}_%j.out" \
@@ -64,7 +64,7 @@ done
 p=30
 sig=0.1
 for ((i=1; i<=reps; i++)); do
-    for distr in "normal" "uniform" "beta32" "t5"; do
+    for distr in "uniform" "beta32" "t5"; do
       sbatch \
         --job-name="simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}" \
         --output="logs/simu_n${N}_p${p}_sig${sig}_d${distr}_sd${i}_%j.out" \
