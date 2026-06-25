@@ -9,6 +9,8 @@ set -euo pipefail
 # Defaults produce 19 configurations x 50 replicates = 950 array tasks,
 # throttled to at most 100 concurrently running tasks.
 
+export FLEXIBLAS=IMKL  # Compute Canada FlexiBLAS backend name for Intel MKL
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SIM_SCRIPT="${ROOT_DIR}/experiment/simu-simple.R"
 RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/experiment/results}"
