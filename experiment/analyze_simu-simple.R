@@ -228,11 +228,18 @@ if (length(dt_list) == 0) {
 
 res <- rbindlist(dt_list, use.names = TRUE, fill = TRUE)
 
+# Backward-compatible labels for result files created before the dependence
+# experiment was added.
+if (!"distr" %in% names(res)) res[, distr := "unknown"]
+if (!"dependence" %in% names(res)) res[, dependence := "independent"]
+if (!"amplitude_var" %in% names(res)) res[, amplitude_var := 0]
+
 # =========================
 # Basic checks
 # =========================
 required_cols <- c(
-  "seed", "weight", "n", "p", "q", "sig", "s1", "s2", "nt",
+  "seed", "weight", "n", "p", "q", "sig", "distr", "dependence",
+  "amplitude_var", "s1", "s2", "nt",
   "relsseU", "relsseV", "reliseK", "relsiseC"
 )
 
@@ -243,7 +250,7 @@ if (length(missing_cols) > 0) {
 
 # Coerce numeric columns just in case fread inferred oddly
 num_cols <- c(
-  "seed", "n", "p", "q", "sig", "s1", "s2", "nt",
+  "seed", "n", "p", "q", "sig", "amplitude_var", "s1", "s2", "nt",
   "relsseU", "relsseV", "reliseK", "relsiseC"
 )
 for (cc in intersect(num_cols, names(res))) {
@@ -262,7 +269,7 @@ if (nrow(bad_q) > 0) {
 check_fixed <- unique(res[, .(s1, s2, nt)])
 if (nrow(check_fixed) > 1) {
   warning("s1, s2, nt are not fixed across files. ",
-          "The summary below still groups only by (n, p, sig, weight).")
+          "The summary below retains these settings only as diagnostics.")
 }
 
 # =========================
@@ -293,19 +300,19 @@ summary_long <- res[
     relsiseC_mean = mean(relsiseC_raw, na.rm = TRUE),
     relsiseC_sd   = sd(relsiseC_raw, na.rm = TRUE)
   ),
-  by = .(n, p, sig, weight)
+  by = .(n, p, sig, distr, dependence, amplitude_var, weight)
 ]
 
-setorder(summary_long, n, p, sig, weight)
+setorder(summary_long, n, p, sig, distr, dependence, amplitude_var, weight)
 
 # =========================
 # Make wide table:
-# rows = (n, p, sig)
+# rows = simulation setting
 # cols = weight scheme × metric
 # =========================
 summary_wide <- dcast(
   summary_long,
-  n + p + sig ~ weight,
+  n + p + sig + distr + dependence + amplitude_var ~ weight,
   value.var = c(
     "relsseU_mean", "relsseU_sd",
     "relsseV_mean", "relsseV_sd",
@@ -315,10 +322,10 @@ summary_wide <- dcast(
   )
 )
 
-setorder(summary_wide, n, p, sig)
+setorder(summary_wide, n, p, sig, distr, dependence, amplitude_var)
 
 # Optional: reorder columns to group by weight first, then metric
-id_cols <- c("n", "p", "sig")
+id_cols <- c("n", "p", "sig", "distr", "dependence", "amplitude_var")
 other_cols <- setdiff(names(summary_wide), id_cols)
 
 split_name <- function(x) {
@@ -336,7 +343,7 @@ metric_order <- c(
   "reliseK_mean", "reliseK_sd",
   "relsiseC_mean", "relsiseC_sd"
 )
-weight_order <- c("identity", "invcov", "optimal")
+weight_order <- c("identity", "invcov", "invridcov", "optimal")
 
 meta[, metric_rank := match(metric, metric_order)]
 meta[, weight_rank := match(weight, weight_order)]
@@ -630,4 +637,3 @@ latex_table <- print(
 )
 
 cat(latex_table)
-

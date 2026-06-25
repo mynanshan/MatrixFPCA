@@ -32,6 +32,24 @@ psd_project <- function(A) {
   ee$vectors %*% (pmax(ee$values, 0) * t(ee$vectors))
 }
 
+normalize_psd_trace <- function(A, target_trace) {
+  A <- psd_project(A)
+  A_trace <- tr(A)
+  if (!is.finite(A_trace) || A_trace <= 10 * .Machine$double.eps) {
+    stop("The de-noised covariance estimate has no positive trace.")
+  }
+  A * (target_trace / A_trace)
+}
+
+trapz_average <- function(x, y) {
+  stopifnot(length(x) == length(y), length(x) >= 2L)
+  if (is.unsorted(x, strictly = FALSE) || anyDuplicated(x)) {
+    stop("x must be sorted and contain unique values.")
+  }
+  sum(diff(x) * (y[-1L] + y[-length(y)]) / 2) /
+    (x[length(x)] - x[1L])
+}
+
 inv_spd <- function(A, ridge = 1e-8) {
   # question: what's the best choice of tol and ridge?
   A <- 0.5 * (A + t(A))
@@ -256,14 +274,6 @@ compute_W.optimal <- function(
       SIMPLIFY = FALSE
     )
 
-    # if (rescale) {
-    #   W2U <- rescale_trace(W2U, q)
-    #   mtrW3U <- mean(vapply(W3U, tr, numeric(1)))
-    #   if (is.finite(mtrW3U) && mtrW3U > 1e-14) {
-    #     s <- Nbar / mtrW3U
-    #     W3U <- lapply(W3U, function(W3i) W3i * s)
-    #   }
-    # }
   }
 
   if (rescale) {
@@ -309,18 +319,10 @@ compute_W.optimal <- function(
       SIMPLIFY = FALSE
     )
 
-    # if (rescale) {
-    #   W1V <- rescale_trace(W1V, p)
-    #   mtrW3V <- mean(vapply(W3V, tr, numeric(1)))
-    #   if (is.finite(mtrW3V) && mtrW3V > 1e-14) {
-    #     s <- Nbar / mtrW3V
-    #     W3V <- lapply(W3V, function(W3i) W3i * s)
-    #   }
-    # }
   }
 
   if (rescale) {
-    beta1  <- .beta_mode(V, W1V)
+    beta1  <- .beta_mode(U, W1V)
     beta3bar <- mean(mapply(\(Ki, W3i) .beta_mode(Ki, W3i), LK, W3V))
     W1V <- W1V * (p / beta1)
     W3V <- lapply(W3V, function(W3i) W3i * (Nbar / beta3bar))
@@ -368,42 +370,137 @@ get_W <- function(W, m, target = c("U", "V", "K")) {
 ###### Update U,V,K ######
 
 choose.nbasis <- function(
-  nbasis = "sparse",
-  nbasis.min = 5,
+  nbasis = "theory",
+  nbasis.min = NULL,
   ndeg = 3,
-  nsubj = NULL,
-  nobs = NULL,
-  nloc = NULL
+  ndiag,
+  noffdiag,
+  nloc
 ) {
-  # TODO: fix basis choices
-  ## Arguments
-  # nbasis: Assume smoothness >= ndeg
-  #   (1) numeric vector, return nbasis as is
-  #   (2) "sparse"
-  #   (3) "dense"
+  # Return separate marginal basis dimensions for the bivariate K smoother
+  # and the univariate G smoother. The automatic rule follows the balanced
+  # sieve orders J ~ N^(1/(2m+2)) and L ~ N^(1/(2m)), with finite-sample
+  # lower bounds and design-rank caps.
   if (is.numeric(nbasis)) {
-    return(as.integer(nbasis))
+    if (!length(nbasis) %in% 1:2 || any(!is.finite(nbasis))) {
+      stop("Numeric nbasis must have length one or two.")
+    }
+    out <- rep(as.integer(nbasis), length.out = 2L)
+    out <- pmax(as.integer(ndeg) + 2L, pmin(out, as.integer(nloc)))
+    return(stats::setNames(out, c("K", "G")))
   }
-  if (nbasis == "auto") nbasis <- "sparse"
-  if (nbasis == "sparse") {
-    Nmean <- nobs / nsubj
-    nb <- nbasis.min + ceiling((nsubj * Nmean^2)^(1 / (2 * ndeg + 2))) - 1
+
+  nbasis <- match.arg(nbasis, c("theory", "auto", "sparse", "dense"))
+  if (nbasis %in% c("auto", "sparse")) nbasis <- "theory"
+
+  nbasis.min <- if (is.null(nbasis.min)) max(5L, as.integer(ndeg) + 2L) else
+    as.integer(nbasis.min)
+  if (nloc < nbasis.min) {
+    stop("Too few unique time locations for the requested spline degree.")
   }
-  if (nbasis == "dense") {
-    Nmean <- nobs / nsubj
-    scaling <- Nmean / 2 # an intuitive scaling
-    nb <- nbasis.min + ceiling(scaling * nsubj^(1 / (2 * ndeg))) - 1
+
+  if (nbasis == "theory") {
+    J <- nbasis.min - 1L + ceiling(noffdiag^(1 / (2 * ndeg + 2)))
+    L <- nbasis.min - 1L + ceiling(ndiag^(1 / (2 * ndeg)))
+  } else {
+    # Dense designs can support a richer basis, while REML still controls
+    # the effective degrees of freedom.
+    J <- nbasis.min - 1L + ceiling(noffdiag^(1 / (2 * ndeg)))
+    L <- nbasis.min - 1L + ceiling(ndiag^(1 / (2 * ndeg - 1)))
   }
-  # restrict the number of marginal basis functions to be
-  # smaller than number of unique observation locations
-  min(nb, nloc)
+
+  # Keep at least about four observations per tensor-product coefficient.
+  J_cap <- max(nbasis.min, floor(sqrt(noffdiag / 4)))
+  L_cap <- max(nbasis.min, floor(ndiag / 4))
+
+  c(
+    K = min(as.integer(J), as.integer(J_cap), as.integer(nloc)),
+    G = min(as.integer(L), as.integer(L_cap), as.integer(nloc))
+  )
+}
+
+.fit_temporal_two_step <- function(
+  offdiag_data,
+  diag_data,
+  t_grid,
+  nbasis,
+  ndeg,
+  noise,
+  sig2.min
+) {
+  nt <- length(t_grid)
+  covEstFunc <- if (nrow(offdiag_data) > 1e5) mgcv::bam else mgcv::gam
+  formula_K <- stats::as.formula(sprintf(
+    paste0(
+      "Kval ~ te(t1, t2, k = c(%d, %d), ",
+      "m = c(%d, %d), bs = c('ps', 'ps'))"
+    ),
+    nbasis[["K"]], nbasis[["K"]], ndeg, ndeg
+  ))
+
+  fit_K <- covEstFunc(
+    formula_K,
+    data = offdiag_data,
+    weights = offdiag_data$w,
+    method = "REML"
+  )
+
+  grid <- data.table::data.table(
+    t1 = rep(t_grid, each = nt),
+    t2 = rep(t_grid, times = nt)
+  )
+  K_hat <- matrix(predict(fit_K, newdata = grid), nt, nt)
+  # Estimate sigma^2 from the spline surface before PSD projection. The
+  # projection can inflate the fitted diagonal and bias G(t) - K(t, t)
+  # downward. The outer covariance wrappers project the final K estimate.
+  K_hat <- sym(K_hat)
+
+  if (!noise) {
+    return(list(
+      K = K_hat,
+      G = NULL,
+      sig2 = 0,
+      fit = list(K = fit_K, G = NULL),
+      nbasis = nbasis
+    ))
+  }
+
+  diagEstFunc <- if (nrow(diag_data) > 1e5) mgcv::bam else mgcv::gam
+  formula_G <- stats::as.formula(sprintf(
+    "Kval ~ s(t, k = %d, m = %d, bs = 'ps')",
+    nbasis[["G"]], ndeg
+  ))
+  fit_G <- diagEstFunc(
+    formula_G,
+    data = diag_data,
+    weights = diag_data$w,
+    method = "REML"
+  )
+  G_hat <- as.numeric(predict(
+    fit_G,
+    newdata = data.table::data.table(t = t_grid)
+  ))
+
+  sig2.min <- if (is.null(sig2.min)) 0 else as.numeric(sig2.min)[1L]
+  sig2_hat <- max(
+    sig2.min,
+    trapz_average(t_grid, G_hat - diag(K_hat))
+  )
+
+  list(
+    K = K_hat,
+    G = G_hat,
+    sig2 = sig2_hat,
+    fit = list(K = fit_K, G = fit_G),
+    nbasis = nbasis
+  )
 }
 
 estimate_K <- function(
   data,
   W1, W2,
   noise = FALSE,
-  nbasis = "auto",
+  nbasis = "theory",
   ndeg = 3,
   sig2.min = NULL,
   ...
@@ -415,9 +512,10 @@ estimate_K.matfdata.grid <- function(
   data,
   W1, W2,
   noise = FALSE,
-  nbasis = "auto",
+  nbasis = "theory",
   ndeg = 3,
   sig2.min = NULL,
+  use_subject_weights = FALSE,
   ...
 ) {
   if (!is(data, "matfdata.grid")) {
@@ -429,80 +527,53 @@ estimate_K.matfdata.grid <- function(
   p <- data$vdim[1]
   q <- data$vdim[2]
   P <- p * q
+  ndiag <- n * nt
+  noffdiag <- n * nt * (nt - 1L)
+  nb <- choose.nbasis(
+    nbasis = nbasis,
+    ndeg = ndeg,
+    ndiag = ndiag,
+    noffdiag = noffdiag,
+    nloc = nt
+  )
 
-  K_hat <- foreach::foreach(
-    i = seq_len(n),
-    .combine = "+"
-  ) %do% {
-    # get the working K
+  scatter <- foreach::foreach(i = seq_len(n), .combine = rbind) %do% {
     Ki_wk <- get_working_K(get_subj_tnsr(data, i), W1, W2) / P
-    Ki_wk / n
-  }
-
-  if (!noise) {
-    return(list(K = K_hat, sig2 = 0))
-  }
-
-  # create meshgrid
-  t_cov_mesh <- pracma::meshgrid(data$t_grid, data$t_grid)
-  t1 <- as.vector(t_cov_mesh$X)
-  t2 <- as.vector(t_cov_mesh$Y)
-
-  # num.basis is almost num.points
-  nb <- ifelse(is.null(nbasis) || !is.numeric(nbasis), nt - 2, nbasis)
-
-  # TODO: also switch to joint est of K and sig2
-
-  # smooth off-diagonal values
-  offdiag_idx <- t1 != t2
-  K_wk_offdiag <- data.table::data.table(
-    t1 = t1[offdiag_idx],
-    t2 = t2[offdiag_idx],
-    Kval = K_hat[offdiag_idx]
-  )
-  covEstFunc <- if(nrow(K_wk_offdiag) > 1e5) mgcv::bam else mgcv::gam
-  fit_K <- covEstFunc(
-    Kval ~ te(t1, t2, k = c(nb, nb), m = ndeg, bs = "ps"),
-    data = K_wk_offdiag
-  )
-  K_smooth <- predict(
-    fit_K,
-    newdata = data.table::data.table(t1 = t1, t2 = t2)
-  ) |>
-    matrix(nt, nt) |> 
-    psd_project()
-
-  # smooth diagonal values
-  fit_K_diag <- mgcv::gam(
-    Kval ~ s(t, k = nb, m = ndeg, bs = "ps"),
-    data = data.table::data.table(
-      t = data$t_grid,
-      Kval = diag(K_hat)
+    mesh <- pracma::meshgrid(data$t_grid, data$t_grid)
+    t1 <- as.vector(mesh$X)
+    t2 <- as.vector(mesh$Y)
+    is_diag <- t1 == t2
+    w_off <- if (use_subject_weights) 1 / (nt * (nt - 1L)) else 1
+    w_diag <- if (use_subject_weights) 1 / nt else 1
+    data.table::data.table(
+      t1 = t1,
+      t2 = t2,
+      Kval = as.vector(Ki_wk),
+      is_diag = is_diag,
+      w = ifelse(is_diag, w_diag, w_off)
     )
-  )
-  K_diag <- predict(
-    fit_K_diag,
-    newdata = data.table::data.table(t = data$t_grid)
-  )
+  }
 
-  # noise level estimate
-  sig2.min <- ifelse(
-    is.null(sig2.min),
-    1e-4 * mean(K_smooth^2),
-    as.numeric(sig2.min)
+  .fit_temporal_two_step(
+    offdiag_data = scatter[!scatter$is_diag, ],
+    diag_data = data.table::data.table(
+      t = scatter$t1[scatter$is_diag],
+      Kval = scatter$Kval[scatter$is_diag],
+      w = scatter$w[scatter$is_diag]
+    ),
+    t_grid = data$t_grid,
+    nbasis = nb,
+    ndeg = ndeg,
+    noise = noise,
+    sig2.min = sig2.min
   )
-  K_diag_smooth <- K_smooth[t1 == t2]
-  mid_idx <- seq(floor(nt * 0.1), ceiling(nt * 0.9))
-  sig2 <- max(sig2.min, mean(K_diag[mid_idx] - K_diag_smooth[mid_idx]))
-
-  # return K and sig2
-  list(K = K_smooth, sig2 = sig2)
 }
 
 estimate_K.matfdata.irreg <- function(
   data, W1, W2,
-  nbasis = "auto", ndeg = 3,
-  sig2.min = 0,
+  noise = FALSE,
+  nbasis = "theory", ndeg = 3,
+  sig2.min = NULL,
   use_subject_weights = FALSE,
   ...
 ) {
@@ -512,15 +583,17 @@ estimate_K.matfdata.irreg <- function(
   P  <- prod(data$vdim)
   Nis <- vapply(data$t_idx_list, length, integer(1))
 
+  ndiag <- sum(Nis)
+  noffdiag <- sum(Nis * (Nis - 1L))
   nb <- choose.nbasis(
     nbasis = nbasis,
     ndeg = ndeg,
-    nsubj = n,
-    nobs = sum(Nis),
+    ndiag = ndiag,
+    noffdiag = noffdiag,
     nloc = length(unique(unlist(data$t_idx_list)))
   )
 
-  # Build scatter table of all (t1,t2,Kval) points
+  # Build separate off-diagonal and diagonal pseudo-observations.
   K_wk_all <- foreach::foreach(i = seq_len(n), .combine = rbind) %do% {
     Ki_wk <- get_working_K(get_subj_tnsr(data, i), W1, W2) / P
     tid <- data$t_idx_list[[i]]
@@ -532,41 +605,31 @@ estimate_K.matfdata.irreg <- function(
       t1 = t1,
       t2 = t2,
       Kval = as.vector(Ki_wk),
-      diag = as.integer(t1 == t2)
+      is_diag = t1 == t2
     )
 
     if (use_subject_weights) {
-      # prevent big-Ni subjects from dominating (one simple choice)
-      dt$w <- 1 / (length(tid)^2)
+      Ni <- length(tid)
+      dt$w <- ifelse(dt$is_diag, 1 / Ni, 1 / (Ni * (Ni - 1L)))
     } else {
       dt$w <- 1
     }
     dt
   }
 
-  covEstFunc <- if (nrow(K_wk_all) > 1e5) mgcv::bam else mgcv::gam
-
-  # Joint fit: smooth f(t1,t2) + parametric diag term
-  fit <- covEstFunc(
-    Kval ~ te(t1, t2, k = c(nb, nb), m = c(ndeg, ndeg), bs = c("ps", "ps")) + diag,
-    data = K_wk_all,
-    weights = K_wk_all$w,
-    method = "REML"
+  .fit_temporal_two_step(
+    offdiag_data = K_wk_all[!K_wk_all$is_diag, ],
+    diag_data = data.table::data.table(
+      t = K_wk_all$t1[K_wk_all$is_diag],
+      Kval = K_wk_all$Kval[K_wk_all$is_diag],
+      w = K_wk_all$w[K_wk_all$is_diag]
+    ),
+    t_grid = data$t_grid,
+    nbasis = nb,
+    ndeg = ndeg,
+    noise = noise,
+    sig2.min = sig2.min
   )
-
-  # Predict the smooth covariance surface with diag=0 (so nugget not included)
-  grid <- data.table::data.table(
-    t1 = rep(data$t_grid, each = nt),
-    t2 = rep(data$t_grid, times = nt),
-    diag = 0L
-  )
-  K_hat <- matrix(predict(fit, newdata = grid), nt, nt)
-  K_hat <- psd_project(sym(K_hat))
-
-  # diag coefficient estimates delta = sigma^2 * alpha1 * alpha2 on the K_raw scale
-  delta_hat <- max(unname(coef(fit)["diag"]), sig2.min)
-
-  list(K = K_hat, sig2 = delta_hat, fit = fit)
 }
 
 estimate_U <- function(data, W2, W3, ...) {
@@ -659,130 +722,145 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   V_hat
 }
 
-### Main Estimation Function
+### Main Estimation Functions
+
+.fit_matfcov_identity <- function(
+  data,
+  noise = FALSE,
+  nbasis = "theory",
+  ndeg = 3
+) {
+  stopifnot(inherits(data, "matfdata.irreg"))
+
+  p <- data$vdim[1]
+  q <- data$vdim[2]
+  t_grid <- data$t_grid
+  Nis <- vapply(data$t_idx_list, length, integer(1))
+
+  W1 <- diag(1, p); W2 <- diag(1, q)
+  W3 <- lapply(Nis, \(Ni) diag(1, Ni))
+
+  Ksig2 <- estimate_K(data, W1, W2, noise = noise, nbasis = nbasis, ndeg = ndeg)
+  K <- psd_project(sym(Ksig2$K))
+  sig2 <- Ksig2$sig2
+
+  U_hat <- sym(estimate_U(data, W2, W3))
+  U <- normalize_psd_trace(U_hat - diag(sig2, p), p)
+  V_hat <- sym(estimate_V(data, W1, W3))
+  V <- normalize_psd_trace(V_hat - diag(sig2, q), q)
+
+  list(
+    C = create_matrix_covfunc(U, V, K, t_grid, sig2),
+    W = NULL,
+    temporal_fit = Ksig2
+  )
+}
+
+.fit_matfcov_from_pilot <- function(
+  data,
+  pilot,
+  wScheme,
+  noise = FALSE,
+  nbasis = "theory",
+  ndeg = 3,
+  opwIter = 3
+) {
+  stopifnot(inherits(data, "matfdata.irreg"), is(pilot, "matfcov"))
+  wScheme <- match.arg(wScheme, setdiff(WEIGHT_SCHEMES, "identity"))
+
+  p <- data$vdim[1]
+  q <- data$vdim[2]
+  t_grid <- data$t_grid
+  Nis <- vapply(data$t_idx_list, length, integer(1))
+  Nbar <- mean(Nis)
+  LK_pilot <- lapply(
+    data$t_idx_list,
+    \(tid) pilot$K[tid, tid, drop = FALSE]
+  )
+
+  W <- compute_W(
+    pilot$U, pilot$V, LK_pilot, pilot$sig2,
+    wScheme = wScheme,
+    nIter.opt = opwIter
+  )
+
+  # Temporal update: pilot covariances calibrate the unavailable beta factors.
+  W1K <- get_W(W, 1, "K")
+  W2K <- get_W(W, 2, "K")
+  Ksig2 <- estimate_K(
+    data, W1K, W2K,
+    noise = noise,
+    nbasis = nbasis,
+    ndeg = ndeg
+  )
+  beta1K <- tr(pilot$U, W1K) / p
+  beta2K <- tr(pilot$V, W2K) / q
+  alpha1K <- tr(W1K) / p
+  alpha2K <- tr(W2K) / q
+  if (min(beta1K, beta2K, alpha1K, alpha2K) <= 0) {
+    stop("Pilot calibration produced a non-positive temporal scaling factor.")
+  }
+
+  K <- psd_project(sym(Ksig2$K) / (beta1K * beta2K))
+  sig2 <- if (noise) Ksig2$sig2 / (alpha1K * alpha2K) else 0
+
+  # Spatial updates use the same frozen pilot weights. Trace normalization
+  # removes the unknown signal scaling factors after de-ridging.
+  W2U <- get_W(W, 2, "U")
+  W3U <- get_W(W, 3, "U")
+  alpha2U <- tr(W2U) / q
+  alpha3Ubar <- mean(vapply(W3U, tr, numeric(1))) / Nbar
+  U_hat <- sym(estimate_U(data, W2U, W3U))
+  U <- normalize_psd_trace(
+    U_hat - diag(sig2 * alpha2U * alpha3Ubar, p),
+    p
+  )
+
+  W1V <- get_W(W, 1, "V")
+  W3V <- get_W(W, 3, "V")
+  alpha1V <- tr(W1V) / p
+  alpha3Vbar <- mean(vapply(W3V, tr, numeric(1))) / Nbar
+  V_hat <- sym(estimate_V(data, W1V, W3V))
+  V <- normalize_psd_trace(
+    V_hat - diag(sig2 * alpha1V * alpha3Vbar, q),
+    q
+  )
+
+  list(
+    C = create_matrix_covfunc(U, V, K, t_grid, sig2),
+    W = W,
+    pilot = pilot,
+    temporal_fit = Ksig2
+  )
+}
 
 fit_matfcov <- function(
   data,
   wScheme = WEIGHT_SCHEMES,
   noise = FALSE,
-  nbasis = "auto",
+  nbasis = "theory",
   ndeg = 3,
-  maxIter = 2,
   opwIter = 3
 ) {
   wScheme <- match.arg(wScheme)
   stopifnot(inherits(data, "matfdata.irreg"))
 
-  n <- count_subj(data)
-  p <- data$vdim[1]
-  q <- data$vdim[2]
-  t_grid <- data$t_grid
-  nt <- length(t_grid)
+  pilot_fit <- .fit_matfcov_identity(
+    data,
+    noise = noise,
+    nbasis = nbasis,
+    ndeg = ndeg
+  )
+  if (wScheme == "identity") return(pilot_fit)
 
-  # TODO: some lines are still specific to matfdata.irreg. fix that in the future
-  Nis <- sapply(data$t_idx_list, length)
-  Nbar <- mean(Nis)
-
-  #==== First iteration: identity weights ====#
-
-  W1 <- diag(1, p); W2 <- diag(1, q)
-  W3 <- lapply(Nis, \(Ni) diag(1, Ni))
-
-  # ----- update K -----
-  Ksig2 <- estimate_K(data, W1, W2, noise = noise, nbasis = nbasis, ndeg = ndeg)
-  K <- sym(Ksig2$K)
-  sig2 <- Ksig2$sig2
-
-  LK <- lapply(data$t_idx_list, function(tid) K[tid, tid, drop = FALSE])
-
-  beta3bar <- mean(mapply(function(Ki, W3i) tr(Ki, W3i), LK, W3)) / Nbar
-
-  # ----- update U -----
-  U_hat <- sym(estimate_U(data, W2, W3))
-
-  U_tilde <- U_hat - diag(sig2, p)
-  U_tilde <- psd_project(U_tilde)
-
-  U <- U_tilde / beta3bar
-  U <- p * U / tr(U)
-
-  # ----- update V -----
-  V_hat <- sym(estimate_V(data, W1, W3))
-
-  V_tilde <- V_hat - diag(sig2, q)
-  V_tilde <- psd_project(V_tilde)
-
-  V <- V_tilde / beta3bar
-  V <- q * V / tr(V)
-
-  #==== Rest iterations: wScheme ====#
-
-  for (iter in seq_len(max(maxIter - 1, 0))) {
-
-    W <- compute_W(U, V, LK, sig2, wScheme, nIter.opt = opwIter)
-    # FIXME: cheating code
-    # W <- compute_W(
-    #   cov_true$U, cov_true$V, lapply(data$t_idx_list, function(tid) cov_true$K[tid, tid, drop = FALSE]),
-    #   cov_true$sig2, wScheme, nIter.opt = opwIter
-    # )
-
-    # ----- update K -----
-    W1K <- get_W(W, 1, "K"); W2K <- get_W(W, 2, "K")
-    Ksig2 <- estimate_K(data, W1K, W2K, noise = noise, nbasis = nbasis, ndeg = ndeg)
-    K_raw <- sym(Ksig2$K)
-    sig2_raw <- Ksig2$sig2
-
-    beta1K <- tr(U, W1K) / p
-    beta2K <- tr(V, W2K) / q
-    alpha1K <- tr(W1K) / p
-    alpha2K <- tr(W2K) / q
-
-    K <- psd_project(K_raw / (beta1K * beta2K))
-    sig2 <- sig2_raw / (alpha1K * alpha2K)
-
-    # refresh LK after K update
-    LK <- lapply(data$t_idx_list, function(tid) K[tid, tid, drop = FALSE])
-
-    # ----- update U -----
-    W2U <- get_W(W, 2, "U"); W3U <- get_W(W, 3, "U")
-    U_hat <- sym(estimate_U(data, W2U, W3U))
-
-    beta2U <- tr(V, W2U) / q
-    beta3Ubar <- mean(mapply(function(Ki, W3i) tr(Ki, W3i), LK, W3U)) / Nbar
-
-    alpha2U <- tr(W2U) / q
-    alpha3Ubar <- mean(sapply(W3U, tr)) / Nbar
-
-    sig2_cap <- min(eigen(U_hat, symmetric=TRUE, only.values=TRUE)$values)
-    sig2_use <- max(0, min(sig2, 0.99 * sig2_cap / (alpha2U * alpha3Ubar + 1e-12)))
-    U_tilde <- U_hat - diag(sig2_use * alpha2U * alpha3Ubar, p)
-    U_tilde <- psd_project(U_tilde)
-
-    U <- U_tilde / (beta2U * beta3Ubar)
-    U <- p * U / tr(U)
-
-    # ----- update V -----
-    W1V <- get_W(W, 1, "V"); W3V <- get_W(W, 3, "V")
-    V_hat <- sym(estimate_V(data, W1V, W3V))
-
-    beta1V <- tr(U, W1V) / p
-    beta3Vbar <- mean(mapply(function(Ki, W3i) tr(Ki, W3i), LK, W3V)) / Nbar
-
-    alpha1V <- tr(W1V) / p
-    alpha3Vbar <- mean(sapply(W3V, tr)) / Nbar
-
-    sig2_cap <- min(eigen(V_hat, symmetric=TRUE, only.values=TRUE)$values)
-    sig2_use <- max(0, min(sig2, 0.99 * sig2_cap / (alpha1V * alpha3Vbar + 1e-12)))
-    V_tilde <- V_hat - diag(sig2_use * alpha1V * alpha3Vbar, q)
-    V_tilde <- psd_project(V_tilde)
-
-    V <- V_tilde / (beta1V * beta3Vbar)
-    V <- q * V / tr(V)
-  }
-
-  list(
-    C = create_matrix_covfunc(U, V, K, t_grid, sig2),
-    W = if (wScheme == "identity") NULL else W
+  .fit_matfcov_from_pilot(
+    data,
+    pilot = pilot_fit$C,
+    wScheme = wScheme,
+    noise = noise,
+    nbasis = nbasis,
+    ndeg = ndeg,
+    opwIter = opwIter
   )
 }
 
@@ -827,7 +905,7 @@ get_matfpca_scores <- function(
     scores[i, , , ] <- scores_list[[i]]
   }
 
-  return(scores)
+  scores
 }
 
 recover_matfdata <- function(eigf, scores, mean_func = NULL) {
@@ -842,7 +920,7 @@ recover_matfdata <- function(eigf, scores, mean_func = NULL) {
   }
 
   X <- with(eigf, ttl(scores, list(Phi, Psi, Theta), 2:4))
-  return(X)
+  X
 }
 
 

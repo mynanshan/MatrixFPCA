@@ -7,8 +7,6 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=4G
 
-# TODO: change back to offdiag first then diag style
-
 # Read command line arguments
 parser <- argparse::ArgumentParser(
   description = "Determine the settings for this simple simulation."
@@ -64,8 +62,8 @@ parser$add_argument("-rt", "--rank_time",
   help = "Rank of the time dimension"
 )
 parser$add_argument("-nb", "--nbasis",
-  type = "integer", default = 21,
-  help = "Number of basis functions."
+  type = "integer", default = 0,
+  help = "Marginal basis dimension (0: theory-guided automatic choice)."
 )
 parser$add_argument("-set", "--eigset",
   type = "integer", default = 2,
@@ -75,6 +73,15 @@ parser$add_argument("-scd", "--scores_distr",
   type = "character", default = "normal",
   choices = c("normal", "uniform", "beta32", "t5"),
   help = "Distribution of the FPC scores."
+)
+parser$add_argument("-dep", "--score_dependence",
+  type = "character", default = "independent",
+  choices = c("independent", "common_amplitude"),
+  help = "Dependence structure of standardized FPC scores."
+)
+parser$add_argument("-avar", "--amplitude_variance",
+  type = "numeric", default = 1,
+  help = "Variance of A_i^2 under common-amplitude dependence."
 )
 parser$add_argument("--seed",
   type = "integer", default = -1,
@@ -116,9 +123,13 @@ npc_row <- if (rr == 0) p else min(max(rr, 1), p)
 npc_col <- if (rc == 0) q else min(max(rc, 1), q)
 npc_time <- min(max(rt, 1), nt)
 
-nbasis <- min(max(args[["nbasis"]], 1), nt)
+nbasis <- if (args[["nbasis"]] <= 0) "theory" else
+  min(max(args[["nbasis"]], 3), nt)
 eigset <- args[["eigset"]]
 scores_distr <- args[["scores_distr"]]
+score_dependence <- args[["score_dependence"]]
+amplitude_var <- max(args[["amplitude_variance"]], 0)
+if (score_dependence == "independent") amplitude_var <- 0
 seed <- args[["seed"]]
 seed <- ifelse(seed < 0, ceiling(runif(1)*9999), seed)
 ifsave <- as.logical(args[["save"]])
@@ -127,6 +138,9 @@ manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
   scores_distr <- "beta32"
+  score_dependence <- "independent"
+  # score_dependence <- "common_amplitude"
+  amplitude_var <- 1
 }
 
 cat(
@@ -142,7 +156,10 @@ cat(
   "sr2 =", sr2, "\n",
   "npc_row=", npc_row, "\n",
   "npc_col=", npc_col, "\n",
-  "npc_time=", npc_time, "\n"
+  "npc_time=", npc_time, "\n",
+  "scores_distr=", scores_distr, "\n",
+  "score_dependence=", score_dependence, "\n",
+  "amplitude_var=", amplitude_var, "\n"
 )
 
 library(fda)
@@ -182,7 +199,10 @@ genData <- gen_data_simple(
   nt, t_range,
   sampling_ratio = sampling_ratio,
   sig = sig,
-  eigvecSet = eigset
+  eigvecSet = eigset,
+  scores_distr = scores_distr,
+  score_dependence = score_dependence,
+  amplitude_var = amplitude_var
 )
 
 data <- genData$data
@@ -193,80 +213,47 @@ eig_true <- genData$eig
 
 # Estimation --------------------------------------------------------------
 
-cat("==== Start Estimation: Identity weights ====\n")
+weight_schemes <- WEIGHT_SCHEMES
 
-cobj_idt <- fit_matfcov(
-  data, wScheme = "identity", noise = TRUE, nbasis = nbasis, maxIter = 1
-)
-cov_idt <- cobj_idt$C
+evaluate_fit <- function(fit, truth) {
+  estimate <- fit$C
+  sseU <- matFNorm2(estimate$U - truth$U)
+  sseV <- matFNorm2(estimate$V - truth$V)
+  iseK <- fun2dNorm2(estimate$K - truth$K, truth$t_grid)
+  siseC <- matfcovDiffNorm2(estimate, truth)
+  c(
+    sseU = sseU,
+    sseV = sseV,
+    iseK = iseK,
+    siseC = siseC,
+    relsseU = sseU / matFNorm2(truth$U),
+    relsseV = sseV / matFNorm2(truth$V),
+    reliseK = iseK / fun2dNorm2(truth$K, truth$t_grid),
+    relsiseC = siseC / matfcovNorm2(truth)
+  )
+}
 
-cat("==== Start Estimation: Inv.cov. weights ====\n")
-
-cobj_inv <- fit_matfcov(
-  data, wScheme = "invcov", noise = TRUE, nbasis = nbasis,
-  maxIter = 2
-)
-cov_inv <- cobj_inv$C
-
-cat("==== Start Estimation: Optimal weights ====\n")
-
-cobj_opt <- fit_matfcov(
-  data, wScheme = "optimal", noise = TRUE, nbasis = nbasis,
-  maxIter = 2, opwIter = 3
-)
-cov_opt <- cobj_opt$C
-
-sseU_idt <- matFNorm2(cov_idt$U - cov_true$U)
-sseV_idt <- matFNorm2(cov_idt$V - cov_true$V)
-iseK_idt <- fun2dNorm2(cov_idt$K - cov_true$K, cov_true$t_grid)
-siseC_idt <- matfcovDiffNorm2(cov_idt, cov_true)
-relsseU_idt <- sseU_idt / matFNorm2(cov_true$U)
-relsseV_idt <- sseV_idt / matFNorm2(cov_true$V)
-reliseK_idt <- iseK_idt / fun2dNorm2(cov_true$K, cov_true$t_grid)
-relsiseC_idt <- siseC_idt / matfcovNorm2(cov_true)
-
-sseU_inv <- matFNorm2(cov_inv$U - cov_true$U)
-sseV_inv <- matFNorm2(cov_inv$V - cov_true$V)
-iseK_inv <- fun2dNorm2(cov_inv$K - cov_true$K, cov_true$t_grid)
-siseC_inv <- matfcovDiffNorm2(cov_inv, cov_true)
-relsseU_inv <- sseU_inv / matFNorm2(cov_true$U)
-relsseV_inv <- sseV_inv / matFNorm2(cov_true$V)
-reliseK_inv <- iseK_inv / fun2dNorm2(cov_true$K, cov_true$t_grid)
-relsiseC_inv <- siseC_inv / matfcovNorm2(cov_true)
-
-sseU_opt <- matFNorm2(cov_opt$U - cov_true$U)
-sseV_opt <- matFNorm2(cov_opt$V - cov_true$V)
-iseK_opt <- fun2dNorm2(cov_opt$K - cov_true$K, cov_true$t_grid)
-siseC_opt <- matfcovDiffNorm2(cov_opt, cov_true)
-relsseU_opt <- sseU_opt / matFNorm2(cov_true$U)
-relsseV_opt <- sseV_opt / matFNorm2(cov_true$V)
-reliseK_opt <- iseK_opt / fun2dNorm2(cov_true$K, cov_true$t_grid)
-relsiseC_opt <- siseC_opt / matfcovNorm2(cov_true)
-
-cat(
-  ">>>>> Weighting scheme: identity\n",
-  "Rel. SSE (U): ", relsseU_idt, "\n",
-  "Rel. SSE (V): ", relsseV_idt, "\n",
-  "Rel. ISE (K): ", reliseK_idt, "\n",
-  "Rel. SISE (C): ", relsiseC_idt, "\n",
-  sep = ""
-)
-cat(
-  ">>>>> Weighting scheme: invcov\n",
-  "Rel. SSE (U): ", relsseU_inv, "\n",
-  "Rel. SSE (V): ", relsseV_inv, "\n",
-  "Rel. ISE (K): ", reliseK_inv, "\n",
-  "Rel. SISE (C): ", relsiseC_inv, "\n",
-  sep = ""
-)
-cat(
-  ">>>>> Weighting scheme: optimal\n",
-  "Rel. SSE (U): ", relsseU_opt, "\n",
-  "Rel. SSE (V): ", relsseV_opt, "\n",
-  "Rel. ISE (K): ", reliseK_opt, "\n",
-  "Rel. SISE (C): ", relsiseC_opt, "\n",
-  sep = ""
-)
+fit_results <- lapply(weight_schemes, function(scheme) {
+  cat("==== Start Estimation:", scheme, "weights ====\n")
+  fit <- fit_matfcov(
+    data,
+    wScheme = scheme,
+    noise = TRUE,
+    nbasis = nbasis,
+    opwIter = 3
+  )
+  metrics <- evaluate_fit(fit, cov_true)
+  cat(
+    ">>>>> Weighting scheme: ", scheme, "\n",
+    "Rel. SSE (U): ", metrics[["relsseU"]], "\n",
+    "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
+    "Rel. ISE (K): ", metrics[["reliseK"]], "\n",
+    "Rel. SISE (C): ", metrics[["relsiseC"]], "\n",
+    sep = ""
+  )
+  list(fit = fit, metrics = metrics)
+})
+names(fit_results) <- weight_schemes
 
 
 # par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
@@ -361,16 +348,26 @@ if (ifsave) {
 
   header <- c(
     "method", "seed", "weight",
-    "n", "p", "q", "sig", "distr", "s1", "s2", "nt",
+    "n", "p", "q", "sig", "distr", "dependence", "amplitude_var",
+    "s1", "s2", "nt",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC"
   )
 
   file_info <- file.info(file_path)
     
-  # If empty, write the predefined text
+  # If empty, write the predefined text. Refuse to append new-format rows to
+  # an older result file with a different schema.
   if (is.na(file_info$size) || file_info$size == 0) {
     writeLines(paste0(header, collapse=","), con = file_path)
+  } else {
+    existing_header <- names(data.table::fread(file_path, nrows = 0))
+    if (!identical(existing_header, header)) {
+      stop(
+        "Existing result file has an incompatible header: ", file_path,
+        "\nMove or rename the old file before saving this simulation."
+      )
+    }
   }
 
   formatter <- function(x, digits = 7, logarithm = TRUE) {
@@ -378,27 +375,22 @@ if (ifsave) {
     round(x, digits)
   }
 
-  out_idt <- c(
-    "MatFPCA", seed, "identity", 
-    n, p, q, sig, scores_distr, s1, s2, nt,
-    formatter(sseU_idt), formatter(sseV_idt), formatter(iseK_idt), formatter(siseC_idt),
-    formatter(relsseU_idt), formatter(relsseV_idt), formatter(reliseK_idt), formatter(relsiseC_idt)
-  )
-  out_inv <- c(
-    "MatFPCA", seed, "invcov", 
-    n, p, q, sig, scores_distr, s1, s2, nt,
-    formatter(sseU_inv), formatter(sseV_inv), formatter(iseK_inv), formatter(siseC_inv),
-    formatter(relsseU_inv), formatter(relsseV_inv), formatter(reliseK_inv), formatter(relsiseC_inv)
-  )
-  out_opt <- c(
-    "MatFPCA", seed, "optimal", 
-    n, p, q, sig, scores_distr, s1, s2, nt,
-    formatter(sseU_opt), formatter(sseV_opt), formatter(iseK_opt), formatter(siseC_opt),
-    formatter(relsseU_opt), formatter(relsseV_opt), formatter(reliseK_opt), formatter(relsiseC_opt)
-  )
-
-  write(paste0(out_idt, collapse = ","), file = file_path, append = TRUE)
-  write(paste0(out_inv, collapse = ","), file = file_path, append = TRUE)
-  write(paste0(out_opt, collapse = ","), file = file_path, append = TRUE)
+  for (scheme in weight_schemes) {
+    metrics <- fit_results[[scheme]]$metrics
+    out <- c(
+      "MatFPCA", seed, scheme,
+      n, p, q, sig, scores_distr, score_dependence, amplitude_var,
+      s1, s2, nt,
+      formatter(metrics[["sseU"]]),
+      formatter(metrics[["sseV"]]),
+      formatter(metrics[["iseK"]]),
+      formatter(metrics[["siseC"]]),
+      formatter(metrics[["relsseU"]]),
+      formatter(metrics[["relsseV"]]),
+      formatter(metrics[["reliseK"]]),
+      formatter(metrics[["relsiseC"]])
+    )
+    write(paste0(out, collapse = ","), file = file_path, append = TRUE)
+  }
 
 }

@@ -103,7 +103,7 @@ subset_subj = function(data, i) UseMethod("subset_subj")
 subset_subj.matfdata.grid = function(data, i) {
   i = as.integer(as.vector(i))
   create_matrix_funcdata_grid(
-    X = data$X[i,,drop=FALSE],
+    X = rTensor::as.tensor(data$X@data[i, , , , drop = FALSE]),
     t_grid = data$t_grid)
 }
 
@@ -127,7 +127,9 @@ get_subj_tnsr.matfdata.grid = function(data, i) {
   i = as.integer(i)
   stopifnot(length(i) == 1)
   shape = dim(data$X)[2:length(dim(data$X))]
-  return(data$X[i,] |> structure(dim=shape))
+  X_i <- data$X@data[i, , , , drop = FALSE]
+  dim(X_i) <- shape
+  rTensor::as.tensor(X_i)
 }
 
 get_subj_tnsr.matfdata.irreg = function(data, i, shape_check=TRUE) {
@@ -396,4 +398,3 @@ trunc.matfeigen = function(
   
   return(.trunc.matfeigen(eig, r[1], r[2], r[3]))
 }
-

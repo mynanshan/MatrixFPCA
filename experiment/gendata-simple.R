@@ -11,7 +11,9 @@ gen_data_simple <- function(
   sig = 0,
   eigvecSet = 1,
   eigvalSet = 1,
-  scores_distr = c("normal", "uniform", "beta32", "t5")
+  scores_distr = c("normal", "uniform", "beta32", "t5"),
+  score_dependence = c("independent", "common_amplitude"),
+  amplitude_var = 1
 ) {
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
@@ -67,7 +69,8 @@ gen_data_simple <- function(
   
   # FPC scores
   scores_distr <- match.arg(scores_distr)
-  Z <- if (scores_distr == "normal") {
+  score_dependence <- match.arg(score_dependence)
+  Z_base <- if (scores_distr == "normal") {
     rnorm(n * npc)
   } else if (scores_distr == "uniform") {
     runif(n * npc, -1, 1) / sqrt(1 / 3)
@@ -76,9 +79,27 @@ gen_data_simple <- function(
   } else if (scores_distr == "t5") {
     rt(n * npc, 5) / sqrt(5 / 3)
   }
-  Z <- Z |>
-    array(dim=c(n, npc_col, npc_row, npc_time)) |> 
-    as.tensor()
+
+  amplitude_var <- max(as.numeric(amplitude_var)[1L], 0)
+  A <- rep(1, n)
+  if (score_dependence == "common_amplitude") {
+    if (amplitude_var <= 0) {
+      warning("amplitude_var is zero; common_amplitude reduces to independence.")
+    } else {
+      # A_i^2 has mean one and variance amplitude_var. Multiplication by A_i
+      # preserves pairwise uncorrelated scores but makes their squares dependent.
+      shape <- 1 / amplitude_var
+      A <- sqrt(rgamma(n, shape = shape, scale = 1 / shape))
+    }
+  } else {
+    amplitude_var <- 0
+  }
+
+  Z <- array(
+    Z_base,
+    dim = c(n, npc_row, npc_col, npc_time)
+  )
+  Z <- sweep(Z, 1L, A, "*") |> as.tensor()
   scores = ttl(
     Z, list(
       diag(sqrt(lam_phi), npc_row, npc_row),
@@ -131,7 +152,10 @@ gen_data_simple <- function(
     data = data,
     cov = cov_true,
     eig = eig_true,
-    scores = scores
+    scores = scores,
+    score_dependence = score_dependence,
+    amplitude_var = amplitude_var,
+    subject_amplitude = A
   )
   
 }
