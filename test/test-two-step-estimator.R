@@ -16,7 +16,7 @@ generated <- gen_data_simple(
   eigvecSet = 2,
   scores_distr = "normal",
   score_dependence = "common_amplitude",
-  amplitude_var = 1
+  dependence_param = 1
 )
 
 stopifnot(

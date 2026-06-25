@@ -76,12 +76,20 @@ parser$add_argument("-scd", "--scores_distr",
 )
 parser$add_argument("-dep", "--score_dependence",
   type = "character", default = "independent",
-  choices = c("independent", "common_amplitude"),
+  choices = c(
+    "independent",
+    "common_amplitude",
+    "common_signed",
+    "heavy_amplitude"
+  ),
   help = "Dependence structure of standardized FPC scores."
 )
-parser$add_argument("-avar", "--amplitude_variance",
+parser$add_argument("-dpar", "--dependence_param",
   type = "numeric", default = 1,
-  help = "Variance of A_i^2 under common-amplitude dependence."
+  help = paste(
+    "Var(A_i^2) for common_amplitude;",
+    "Pareto tail index for heavy_amplitude."
+  )
 )
 parser$add_argument("--seed",
   type = "integer", default = -1,
@@ -90,6 +98,10 @@ parser$add_argument("--seed",
 parser$add_argument("--save",
   type = "integer", default = ifelse(interactive(), 0, 1),
   help = "Whether to save the results"
+)
+parser$add_argument("--results_dir",
+  type = "character", default = file.path("experiment", "results"),
+  help = "Directory for one-file-per-configuration simulation results."
 )
 parser$add_argument("--manual",
   type = "integer", default = ifelse(interactive(), 1, 0),
@@ -128,19 +140,21 @@ nbasis <- if (args[["nbasis"]] <= 0) "theory" else
 eigset <- args[["eigset"]]
 scores_distr <- args[["scores_distr"]]
 score_dependence <- args[["score_dependence"]]
-amplitude_var <- max(args[["amplitude_variance"]], 0)
-if (score_dependence == "independent") amplitude_var <- 0
+dependence_param <- args[["dependence_param"]]
+if (score_dependence %in% c("independent", "common_signed")) {
+  dependence_param <- 0
+}
 seed <- args[["seed"]]
 seed <- ifelse(seed < 0, ceiling(runif(1)*9999), seed)
 ifsave <- as.logical(args[["save"]])
+results_dir <- args[["results_dir"]]
 
 manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
   scores_distr <- "beta32"
-  score_dependence <- "independent"
-  # score_dependence <- "common_amplitude"
-  amplitude_var <- 1
+  score_dependence <- "common_signed"
+  dependence_param <- 0
 }
 
 cat(
@@ -159,7 +173,7 @@ cat(
   "npc_time=", npc_time, "\n",
   "scores_distr=", scores_distr, "\n",
   "score_dependence=", score_dependence, "\n",
-  "amplitude_var=", amplitude_var, "\n"
+  "dependence_param=", dependence_param, "\n"
 )
 
 library(fda)
@@ -202,7 +216,7 @@ genData <- gen_data_simple(
   eigvecSet = eigset,
   scores_distr = scores_distr,
   score_dependence = score_dependence,
-  amplitude_var = amplitude_var
+  dependence_param = dependence_param
 )
 
 data <- genData$data
@@ -213,7 +227,9 @@ eig_true <- genData$eig
 
 # Estimation --------------------------------------------------------------
 
-weight_schemes <- WEIGHT_SCHEMES
+# The heuristic inverse-covariance schemes remain available in fit_matfcov(),
+# but paper simulations compare only the two estimators defined in the theory.
+weight_schemes <- c("identity", "optimal")
 
 evaluate_fit <- function(fit, truth) {
   estimate <- fit$C
@@ -338,48 +354,46 @@ names(fit_results) <- weight_schemes
 
 if (ifsave) {
 
-  dir_path <- file.path("experiment", "results")
+  dir_path <- results_dir
   if (!dir.exists(dir_path)) dir.create(dir_path, recursive = TRUE)
+
+  file_token <- function(x) {
+    gsub("[^A-Za-z0-9]+", "p", format(x, scientific = FALSE, trim = TRUE))
+  }
   file_id <- paste0(
-    "_r", npc_row, "-", npc_col, "-", npc_time, "_set", eigset, "_sd", seed
+    "_n", n,
+    "_p", p,
+    "_sig", file_token(sig),
+    "_d", scores_distr,
+    "_dep", score_dependence,
+    "_dp", file_token(dependence_param),
+    "_s", s1, "-", s2,
+    "_nt", nt,
+    "_r", npc_row, "-", npc_col, "-", npc_time,
+    "_set", eigset,
+    "_sd", seed
   )
-  file_name <- paste0("simu", file_id, ".txt")
+  file_name <- paste0("simu", file_id, ".csv")
   file_path <- file.path(dir_path, file_name)
 
   header <- c(
     "method", "seed", "weight",
-    "n", "p", "q", "sig", "distr", "dependence", "amplitude_var",
+    "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
     "s1", "s2", "nt",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC"
   )
-
-  file_info <- file.info(file_path)
-    
-  # If empty, write the predefined text. Refuse to append new-format rows to
-  # an older result file with a different schema.
-  if (is.na(file_info$size) || file_info$size == 0) {
-    writeLines(paste0(header, collapse=","), con = file_path)
-  } else {
-    existing_header <- names(data.table::fread(file_path, nrows = 0))
-    if (!identical(existing_header, header)) {
-      stop(
-        "Existing result file has an incompatible header: ", file_path,
-        "\nMove or rename the old file before saving this simulation."
-      )
-    }
-  }
 
   formatter <- function(x, digits = 7, logarithm = TRUE) {
     if (logarithm) return(round(log(x + 10 * .Machine$double.eps), digits))
     round(x, digits)
   }
 
-  for (scheme in weight_schemes) {
+  output_rows <- lapply(weight_schemes, function(scheme) {
     metrics <- fit_results[[scheme]]$metrics
-    out <- c(
+    as.list(stats::setNames(c(
       "MatFPCA", seed, scheme,
-      n, p, q, sig, scores_distr, score_dependence, amplitude_var,
+      n, p, q, sig, scores_distr, score_dependence, dependence_param,
       s1, s2, nt,
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),
@@ -389,8 +403,11 @@ if (ifsave) {
       formatter(metrics[["relsseV"]]),
       formatter(metrics[["reliseK"]]),
       formatter(metrics[["relsiseC"]])
-    )
-    write(paste0(out, collapse = ","), file = file_path, append = TRUE)
-  }
+    ), header))
+  })
+  data.table::fwrite(
+    data.table::rbindlist(output_rows),
+    file = file_path
+  )
 
 }

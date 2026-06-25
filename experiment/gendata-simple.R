@@ -12,8 +12,13 @@ gen_data_simple <- function(
   eigvecSet = 1,
   eigvalSet = 1,
   scores_distr = c("normal", "uniform", "beta32", "t5"),
-  score_dependence = c("independent", "common_amplitude"),
-  amplitude_var = 1
+  score_dependence = c(
+    "independent",
+    "common_amplitude",
+    "common_signed",
+    "heavy_amplitude"
+  ),
+  dependence_param = 1
 ) {
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
@@ -70,29 +75,57 @@ gen_data_simple <- function(
   # FPC scores
   scores_distr <- match.arg(scores_distr)
   score_dependence <- match.arg(score_dependence)
-  Z_base <- if (scores_distr == "normal") {
-    rnorm(n * npc)
-  } else if (scores_distr == "uniform") {
-    runif(n * npc, -1, 1) / sqrt(1 / 3)
-  } else if (scores_distr == "beta32") {
-    (rbeta(n * npc, 3, 2) - 0.6) * 5
-  } else if (scores_distr == "t5") {
-    rt(n * npc, 5) / sqrt(5 / 3)
+
+  draw_standardized <- function(size) {
+    if (scores_distr == "normal") {
+      rnorm(size)
+    } else if (scores_distr == "uniform") {
+      runif(size, -1, 1) / sqrt(1 / 3)
+    } else if (scores_distr == "beta32") {
+      (rbeta(size, 3, 2) - 0.6) * 5
+    } else if (scores_distr == "t5") {
+      rt(size, 5) / sqrt(5 / 3)
+    }
   }
 
-  amplitude_var <- max(as.numeric(amplitude_var)[1L], 0)
+  dependence_param <- as.numeric(dependence_param)[1L]
+  if (!is.finite(dependence_param)) {
+    stop("dependence_param must be finite.")
+  }
+
   A <- rep(1, n)
+  Z_base <- draw_standardized(n * npc)
+
   if (score_dependence == "common_amplitude") {
-    if (amplitude_var <= 0) {
-      warning("amplitude_var is zero; common_amplitude reduces to independence.")
+    # Z_{i,alpha} = A_i xi_{i,alpha}, E(A_i^2) = 1. Scores remain
+    # pairwise uncorrelated, but all squared scores share A_i^2.
+    if (dependence_param <= 0) {
+      warning("dependence_param is non-positive; common_amplitude reduces to independence.")
+      dependence_param <- 0
     } else {
-      # A_i^2 has mean one and variance amplitude_var. Multiplication by A_i
-      # preserves pairwise uncorrelated scores but makes their squares dependent.
-      shape <- 1 / amplitude_var
+      shape <- 1 / dependence_param
       A <- sqrt(rgamma(n, shape = shape, scale = 1 / shape))
     }
+  } else if (score_dependence == "common_signed") {
+    # The user's common-variable construction:
+    # Z_{i,alpha} = A_i S_{i,alpha}, with independent Rademacher signs.
+    # Every score has unit variance and distinct scores are uncorrelated, while
+    # Z_{i,alpha}^2 = A_i^2 for every alpha, giving maximal squared dependence.
+    A <- abs(draw_standardized(n))
+    Z_base <- sample(c(-1, 1), n * npc, replace = TRUE)
+    dependence_param <- 0
+  } else if (score_dependence == "heavy_amplitude") {
+    # A_i^2 is normalized Pareto with tail index dependence_param. For
+    # 1 < dependence_param <= 2, E(A_i^2) exists but E(A_i^4) is infinite,
+    # deliberately violating the fourth-moment assumptions.
+    tail_index <- dependence_param
+    if (tail_index <= 1) {
+      stop("heavy_amplitude requires dependence_param > 1.")
+    }
+    pareto <- runif(n)^(-1 / tail_index)
+    A <- sqrt(pareto * (tail_index - 1) / tail_index)
   } else {
-    amplitude_var <- 0
+    dependence_param <- 0
   }
 
   Z <- array(
@@ -154,7 +187,7 @@ gen_data_simple <- function(
     eig = eig_true,
     scores = scores,
     score_dependence = score_dependence,
-    amplitude_var = amplitude_var,
+    dependence_param = dependence_param,
     subject_amplitude = A
   )
   
