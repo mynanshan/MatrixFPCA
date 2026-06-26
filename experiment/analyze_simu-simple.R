@@ -9,7 +9,10 @@ results_dir <- if (length(args) >= 1L) args[[1L]] else
 output_dir <- if (length(args) >= 2L) args[[2L]] else
   file.path("experiment", "summary")
 expected_repetitions <- if (length(args) >= 3L) as.integer(args[[3L]]) else NA_integer_
-manifest_dir <- file.path(results_dir, "manifests")
+manifest_dirs <- c(
+  file.path(results_dir, "manifests"),
+  file.path("logs", "manifests")
+)
 
 files <- list.files(
   results_dir,
@@ -62,12 +65,13 @@ numeric_columns <- c(
 res[, (numeric_columns) := lapply(.SD, as.numeric), .SDcols = numeric_columns]
 res <- res[weight %in% c("identity", "optimal")]
 
-read_expected_from_manifests <- function(manifest_dir) {
-  manifests <- list.files(
-    manifest_dir,
+read_expected_from_manifests <- function(manifest_dirs) {
+  manifests <- unlist(lapply(
+    manifest_dirs,
+    list.files,
     pattern = "^simu_simple_[0-9]{8}_[0-9]{6}(_[A-Za-z0-9_-]+)?\\.tsv$",
     full.names = TRUE
-  )
+  ))
   if (!length(manifests)) return(NULL)
 
   manifest_info <- data.table(
@@ -158,7 +162,7 @@ run_columns <- c(
 )
 setting_columns_no_weight <- setdiff(run_columns, "seed")
 
-expected_runs <- read_expected_from_manifests(manifest_dir)
+expected_runs <- read_expected_from_manifests(manifest_dirs)
 if (is.null(expected_runs)) {
   if (is.na(expected_repetitions)) {
     expected_repetitions <- max(res$seed, na.rm = TRUE)

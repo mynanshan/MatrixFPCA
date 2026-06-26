@@ -24,8 +24,8 @@ else
 fi
 SIM_SCRIPT="${ROOT_DIR}/experiment/simu-simple.R"
 RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/experiment/results}"
-MANIFEST_DIR="${RESULTS_DIR}/manifests"
 LOG_DIR="${ROOT_DIR}/logs"
+MANIFEST_DIR="${LOG_DIR}/manifests"
 R_COMMAND="${R_COMMAND:-Rscript}"
 TIME_COMMAND="${TIME_COMMAND:-/usr/bin/time}"
 
