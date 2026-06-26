@@ -6,6 +6,7 @@
 
 **/results/
 **/plots/
+**/summary/
 **/output_files
 *.rds
 

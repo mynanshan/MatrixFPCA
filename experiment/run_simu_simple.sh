@@ -2,19 +2,20 @@
 
 set -euo pipefail
 
-module load r/4.5.0
+if command -v module >/dev/null 2>&1; then
+  module load r/4.5.0
+fi
 
 # Usage:
 #   experiment/run_simu_simple.sh [repetitions] [max_parallel]
 #   experiment/run_simu_simple.sh 2 4 --dry-run
 #
-# Defaults produce 19 configurations x 50 replicates = 950 array tasks,
-# throttled to at most 100 concurrently running tasks.
+# Defaults produce the configured experiment grid x 50 replicates, split into
+# resource classes and throttled to at most 100 concurrently running tasks per
+# class unless a smaller class cap is set below.
 #
-# Local benchmarks of the largest configurations used about 0.55 GiB RAM and
-# 5-10 seconds on one CPU. The Slurm request below leaves headroom for slower
-# nodes, package startup, and heavy-tailed replicates without reserving a
-# second idle core or several unnecessary GiB of memory.
+# Fir is sensitive to BLAS-related OOMs; the worker pins FlexiBLAS to IMKL and
+# caps numerical backends to the CPUs requested by each resource class.
 
 if [[ "${1:-}" == "--worker" ]]; then
   ROOT_DIR="${3:?project root was not passed to the Slurm worker}"
@@ -101,12 +102,69 @@ fi
 
 mkdir -p "${MANIFEST_DIR}" "${LOG_DIR}"
 timestamp="$(date +%Y%m%d_%H%M%S)"
-manifest="${MANIFEST_DIR}/simu_simple_${timestamp}.tsv"
-printf "config_id\treplicate\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\n" \
-  > "${manifest}"
 
 declare -A seen_configs
+declare -A manifest_by_class
+declare -A class_task_count
 config_count=0
+
+DIMENSIONS=(20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200)
+RESOURCE_CLASSES=(small medium large)
+
+cpus_for_class() {
+  case "$1" in
+    small) echo 1 ;;
+    medium) echo 2 ;;
+    large) echo 4 ;;
+    *) echo "unknown resource class: $1" >&2; exit 2 ;;
+  esac
+}
+
+mem_for_class() {
+  case "$1" in
+    small) echo "4G" ;;
+    medium) echo "12G" ;;
+    large) echo "32G" ;;
+    *) echo "unknown resource class: $1" >&2; exit 2 ;;
+  esac
+}
+
+parallel_cap_for_class() {
+  case "$1" in
+    small) echo 100 ;;
+    medium) echo 60 ;;
+    large) echo 30 ;;
+    *) echo "unknown resource class: $1" >&2; exit 2 ;;
+  esac
+}
+
+class_for_p() {
+  local p="$1"
+  if (( p <= 60 )); then
+    echo small
+  elif (( p <= 120 )); then
+    echo medium
+  else
+    echo large
+  fi
+}
+
+min_int() {
+  if (( $1 < $2 )); then echo "$1"; else echo "$2"; fi
+}
+
+init_manifest() {
+  local class="$1"
+  local manifest="${MANIFEST_DIR}/simu_simple_${timestamp}_${class}.tsv"
+  manifest_by_class["${class}"]="${manifest}"
+  class_task_count["${class}"]=0
+  printf "config_id\treplicate\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\n" \
+    > "${manifest}"
+}
+
+for class in "${RESOURCE_CLASSES[@]}"; do
+  init_manifest "${class}"
+done
 
 add_config() {
   local n="$1"
@@ -123,6 +181,10 @@ add_config() {
   seen_configs["${key}"]=1
   config_count=$((config_count + 1))
 
+  local class manifest
+  class="$(class_for_p "${p}")"
+  manifest="${manifest_by_class[${class}]}"
+
   local replicate
   for ((replicate = 1; replicate <= repetitions; replicate++)); do
     printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n" \
@@ -130,6 +192,7 @@ add_config() {
       "${n}" "${p}" "${sigma}" "${distribution}" \
       "${dependence}" "${dep_param}" >> "${manifest}"
   done
+  class_task_count["${class}"]=$((class_task_count["${class}"] + repetitions))
 }
 
 # Baseline: n=50, p=q=30, sigma=0.5, Gaussian independent scores.
@@ -142,7 +205,7 @@ for n in 25 50 100; do
 done
 
 # Spatial-dimension series.
-for p in 15 30 60; do
+for p in "${DIMENSIONS[@]}"; do
   add_config 50 "${p}" 0.5 normal independent 0
 done
 
@@ -161,34 +224,55 @@ done
 # common_signed: one common magnitude with independent coordinate signs.
 # heavy_amplitude: Pareto A^2 with index 1.5, finite variance of scores but
 #                  infinite fourth moments; this intentionally violates theory.
-for p in 15 30 60; do
+for p in "${DIMENSIONS[@]}"; do
   add_config 50 "${p}" 0.5 normal common_amplitude 1
   add_config 50 "${p}" 0.5 normal common_signed 0
   add_config 50 "${p}" 0.5 normal heavy_amplitude 1.5
 done
 
 task_count=$((config_count * repetitions))
-echo "Manifest: ${manifest}"
 echo "Configurations: ${config_count}"
 echo "Replicates per configuration: ${repetitions}"
 echo "Array tasks: ${task_count}"
+for class in "${RESOURCE_CLASSES[@]}"; do
+  echo "Manifest (${class}): ${manifest_by_class[${class}]}"
+  echo "Array tasks (${class}): ${class_task_count[${class}]}"
+done
 
 if [[ "${dry_run}" == "--dry-run" ]]; then
   echo "Dry run requested; no jobs submitted."
+  for class in "${RESOURCE_CLASSES[@]}"; do
+    rm -f "${manifest_by_class[${class}]}"
+  done
   exit 0
 fi
 
-job_id="$(sbatch --parsable \
-  --job-name="matfpca-simple" \
-  --output="${LOG_DIR}/simu_simple_%A_%a.out" \
-  --time="0:15:00" \
-  --nodes=1 \
-  --ntasks=1 \
-  --cpus-per-task=1 \
-  --mem="2G" \
-  --array="0-$((task_count - 1))%${max_parallel}" \
-  "$0" --worker "${manifest}" "${ROOT_DIR}")"
+submitted_jobs=()
+for class in "${RESOURCE_CLASSES[@]}"; do
+  class_tasks="${class_task_count[${class}]}"
+  if (( class_tasks == 0 )); then
+    continue
+  fi
 
-echo "Submitted Slurm array ${job_id}."
+  class_parallel="$(min_int "${max_parallel}" "$(parallel_cap_for_class "${class}")")"
+  class_cpus="$(cpus_for_class "${class}")"
+  class_mem="$(mem_for_class "${class}")"
+  manifest="${manifest_by_class[${class}]}"
+
+  job_id="$(sbatch --parsable \
+    --job-name="matfpca-simple-${class}" \
+    --output="${LOG_DIR}/simu_simple_${class}_%A_%a.out" \
+    --time="1:00:00" \
+    --nodes=1 \
+    --ntasks=1 \
+    --cpus-per-task="${class_cpus}" \
+    --mem="${class_mem}" \
+    --array="0-$((class_tasks - 1))%${class_parallel}" \
+    "$0" --worker "${manifest}" "${ROOT_DIR}")"
+
+  submitted_jobs+=("${job_id}")
+  echo "Submitted ${class} Slurm array ${job_id} (${class_tasks} tasks, ${class_cpus} CPUs, ${class_mem})."
+done
+
 echo "After completion, audit actual use with:"
-echo "  sacct -j ${job_id} --units=M --format=JobID,State,Elapsed,AllocCPUS,ReqMem,MaxRSS"
+echo "  sacct -j $(IFS=,; echo "${submitted_jobs[*]}") --units=M --format=JobID,State,Elapsed,AllocCPUS,ReqMem,MaxRSS"
