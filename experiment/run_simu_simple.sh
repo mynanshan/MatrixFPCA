@@ -108,7 +108,7 @@ declare -A manifest_by_class
 declare -A class_task_count
 config_count=0
 
-DIMENSIONS=(20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200)
+DIMENSIONS=(20 30 50 100 150 200)
 DISTRIBUTIONS=(normal uniform beta32 t5)
 RESOURCE_CLASSES=(small medium large)
 

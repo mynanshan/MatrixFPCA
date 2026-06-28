@@ -13,6 +13,7 @@ manifest_dirs <- c(
   file.path(results_dir, "manifests"),
   file.path("logs", "manifests")
 )
+dimension_grid <- c(20, 30, 50, 100, 150, 200)
 
 files <- list.files(
   results_dir,
@@ -132,7 +133,6 @@ make_expected_configs <- function(repetitions) {
   }
 
   for (n in c(25, 50, 100)) add_config(n, 30, 0.5, "normal", "independent", 0)
-  dimension_grid <- seq(20, 200, 10)
   distribution_grid <- c("normal", "uniform", "beta32", "t5")
   for (p in dimension_grid) {
     for (distr in distribution_grid) {
@@ -372,7 +372,7 @@ dimension_metric_data[
 
 dimension_data <- dimension_metric_data[
   n == 50 & sig == 0.5 & dependence == "independent" &
-    p %in% seq(20, 200, 10)
+    p %in% dimension_grid
 ]
 dimension_plot <- ggplot(
   dimension_data,
@@ -398,7 +398,7 @@ dimension_plot <- ggplot(
 
 dependent_dimension_data <- dimension_metric_data[
   n == 50 & sig == 0.5 & distr == "normal" &
-    dependence != "independent" & p %in% seq(20, 200, 10)
+    dependence != "independent" & p %in% dimension_grid
 ]
 dependent_dimension_plot <- ggplot(
   dependent_dimension_data,
