@@ -1,13 +1,60 @@
+# R and RStudio local state
 *.Rproj
-.Rproj.user
+.Rproj.user/
 .Rhistory
 .RData
 .Ruserdata
+.Rcache/
 
+# R package, test, and documentation caches
+*.Rcheck/
+revdep/
+tests/testthat/_snaps/new/
+tests/testthat/_snaps/*.new
+**/.testthat_last_run
+**/cache/
+**/*_cache/
+**/*_files/
+
+# Generated project artifacts
 **/results/
 **/plots/
 **/summary/
-**/output_files
+**/output_files/
+**/deprecated/
 *.rds
 
-**/deprecated/
+# Python caches (used by helper scripts or notebooks)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Editor and operating-system metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+
+# LaTeX auxiliary files
+*.aux
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.out
+*.synctex.gz
+*.toc
+
+# AI agents files
+.agents/
+.codex/
