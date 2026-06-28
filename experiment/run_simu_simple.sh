@@ -7,12 +7,13 @@ if command -v module >/dev/null 2>&1; then
 fi
 
 # Usage:
-#   experiment/run_simu_simple.sh [repetitions] [max_parallel]
-#   experiment/run_simu_simple.sh 2 4 --dry-run
+#   experiment/run_simu_simple.sh [max_seed] [min_seed] [max_parallel]
+#   experiment/run_simu_simple.sh 100 1 100
+#   experiment/run_simu_simple.sh 200 101 100 --dry-run
 #
-# Defaults produce the configured experiment grid x 50 replicates, split into
+# Defaults produce the configured experiment grid for seeds 1-50, split into
 # resource classes and throttled to at most 100 concurrently running tasks per
-# class unless a smaller class cap is set below.
+# class unless a smaller class cap is set below. Seed bounds are inclusive.
 #
 # Fir is sensitive to BLAS-related OOMs; the worker pins FlexiBLAS to IMKL and
 # caps numerical backends to the CPUs requested by each resource class.
@@ -41,11 +42,11 @@ run_array_task() {
     exit 1
   fi
 
-  local config_id replicate n p sigma distribution dependence dep_param
+  local config_id seed n p sigma distribution dependence dep_param
   IFS=$'\t' read -r \
-    config_id replicate n p sigma distribution dependence dep_param <<< "${row}"
+    config_id seed n p sigma distribution dependence dep_param <<< "${row}"
 
-  echo "Running config=${config_id}, replicate=${replicate}"
+  echo "Running config=${config_id}, seed=${seed}"
   echo "n=${n}, p=q=${p}, sigma=${sigma}, distribution=${distribution}"
   echo "dependence=${dependence}, dependence_param=${dep_param}"
 
@@ -76,7 +77,7 @@ run_array_task() {
     --scores_distr "${distribution}" \
     --score_dependence "${dependence}" \
     --dependence_param "${dep_param}" \
-    --seed "${replicate}" \
+    --seed "${seed}" \
     --save 1 \
     --results_dir "${RESULTS_DIR}" \
     --manual 0
@@ -87,18 +88,29 @@ if [[ "${1:-}" == "--worker" ]]; then
   exit 0
 fi
 
-repetitions="${1:-50}"
-max_parallel="${2:-100}"
-dry_run="${3:-}"
+max_seed="${1:-50}"
+min_seed="${2:-1}"
+max_parallel="${3:-100}"
+dry_run="${4:-}"
 
-if ! [[ "${repetitions}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "repetitions must be a positive integer" >&2
+if ! [[ "${max_seed}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "max_seed must be a positive integer" >&2
+  exit 2
+fi
+if ! [[ "${min_seed}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "min_seed must be a positive integer" >&2
   exit 2
 fi
 if ! [[ "${max_parallel}" =~ ^[1-9][0-9]*$ ]]; then
   echo "max_parallel must be a positive integer" >&2
   exit 2
 fi
+if (( min_seed > max_seed )); then
+  echo "min_seed must be less than or equal to max_seed" >&2
+  exit 2
+fi
+
+seed_count=$((max_seed - min_seed + 1))
 
 mkdir -p "${MANIFEST_DIR}" "${LOG_DIR}"
 timestamp="$(date +%Y%m%d_%H%M%S)"
@@ -156,10 +168,10 @@ min_int() {
 
 init_manifest() {
   local class="$1"
-  local manifest="${MANIFEST_DIR}/simu_simple_${timestamp}_${class}.tsv"
+  local manifest="${MANIFEST_DIR}/simu_simple_${timestamp}_s${min_seed}-${max_seed}_${class}.tsv"
   manifest_by_class["${class}"]="${manifest}"
   class_task_count["${class}"]=0
-  printf "config_id\treplicate\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\n" \
+  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\n" \
     > "${manifest}"
 }
 
@@ -186,14 +198,14 @@ add_config() {
   class="$(class_for_p "${p}")"
   manifest="${manifest_by_class[${class}]}"
 
-  local replicate
-  for ((replicate = 1; replicate <= repetitions; replicate++)); do
+  local seed
+  for ((seed = min_seed; seed <= max_seed; seed++)); do
     printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-      "${config_count}" "${replicate}" \
+      "${config_count}" "${seed}" \
       "${n}" "${p}" "${sigma}" "${distribution}" \
       "${dependence}" "${dep_param}" >> "${manifest}"
   done
-  class_task_count["${class}"]=$((class_task_count["${class}"] + repetitions))
+  class_task_count["${class}"]=$((class_task_count["${class}"] + seed_count))
 }
 
 # Baseline: n=50, p=q=30, sigma=0.5, Gaussian independent scores.
@@ -229,9 +241,9 @@ for p in "${DIMENSIONS[@]}"; do
   add_config 50 "${p}" 0.5 normal heavy_amplitude 1.5
 done
 
-task_count=$((config_count * repetitions))
+task_count=$((config_count * seed_count))
 echo "Configurations: ${config_count}"
-echo "Replicates per configuration: ${repetitions}"
+echo "Seed range: ${min_seed}-${max_seed} (${seed_count} seeds per configuration)"
 echo "Array tasks: ${task_count}"
 for class in "${RESOURCE_CLASSES[@]}"; do
   echo "Manifest (${class}): ${manifest_by_class[${class}]}"
