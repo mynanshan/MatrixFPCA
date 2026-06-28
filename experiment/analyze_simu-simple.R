@@ -63,7 +63,9 @@ numeric_columns <- c(
   "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC"
 )
 res[, (numeric_columns) := lapply(.SD, as.numeric), .SDcols = numeric_columns]
-res <- res[weight %in% c("identity", "optimal")]
+# Read results created before the method was renamed without requiring a rerun.
+res[weight == "optimal", weight := "gaussian_refined"]
+res <- res[weight %in% c("identity", "gaussian_refined")]
 
 read_expected_from_manifests <- function(manifest_dirs) {
   manifests <- unlist(lapply(
@@ -131,11 +133,13 @@ make_expected_configs <- function(repetitions) {
 
   for (n in c(25, 50, 100)) add_config(n, 30, 0.5, "normal", "independent", 0)
   dimension_grid <- seq(20, 200, 10)
-  for (p in dimension_grid) add_config(50, p, 0.5, "normal", "independent", 0)
-  for (sig in c(0, 0.5, 1)) add_config(50, 30, sig, "normal", "independent", 0)
-  for (distr in c("normal", "uniform", "beta32", "t5")) {
-    add_config(50, 30, 0.5, distr, "independent", 0)
+  distribution_grid <- c("normal", "uniform", "beta32", "t5")
+  for (p in dimension_grid) {
+    for (distr in distribution_grid) {
+      add_config(50, p, 0.5, distr, "independent", 0)
+    }
   }
+  for (sig in c(0, 0.5, 1)) add_config(50, 30, sig, "normal", "independent", 0)
   for (p in dimension_grid) {
     add_config(50, p, 0.5, "normal", "common_amplitude", 1)
     add_config(50, p, 0.5, "normal", "common_signed", 0)
@@ -181,9 +185,9 @@ missing_runs <- expected_runs[!actual_run_keys, on = run_columns]
 expected_method_rows <- expected_runs[, {
   row_identity <- copy(.SD)
   row_identity[, weight := "identity"]
-  row_optimal <- copy(.SD)
-  row_optimal[, weight := "optimal"]
-  rbind(row_identity, row_optimal)
+  row_refined <- copy(.SD)
+  row_refined[, weight := "gaussian_refined"]
+  rbind(row_identity, row_refined)
 }, by = config_id]
 expected_method_rows[, config_id := NULL]
 actual_method_rows <- unique(res[, c(run_columns, "weight"), with = FALSE])
@@ -261,7 +265,8 @@ summary_wide <- dcast(
   )
 )
 
-# Paired replicate-level comparison. Ratios below one favor optimal weighting.
+# Paired replicate-level comparison. Ratios below one favor Gaussian-refined
+# weighting.
 paired <- dcast(
   res,
   seed + n + p + q + sig + distr + dependence + dependence_param +
@@ -271,8 +276,8 @@ paired <- dcast(
 for (metric in metric_columns) {
   paired[
     ,
-    paste0(metric, "_optimal_ratio") :=
-      get(paste0(metric, "_raw_optimal")) /
+    paste0(metric, "_gaussian_refined_ratio") :=
+      get(paste0(metric, "_raw_gaussian_refined")) /
       get(paste0(metric, "_raw_identity"))
   ]
 }
@@ -296,6 +301,21 @@ plot_data[
     labels = c("U", "V", "K", "Full covariance")
   )
 ]
+plot_data[
+  ,
+  `:=`(
+    weight_label = factor(
+      weight,
+      levels = c("identity", "gaussian_refined"),
+      labels = c("Identity", "Gaussian-refined")
+    ),
+    distr_label = factor(
+      distr,
+      levels = c("normal", "uniform", "beta32", "t5"),
+      labels = c("Gaussian", "Uniform", "Beta(3,2)", "t(5)")
+    )
+  )
+]
 
 theme_paper <- theme_bw(base_size = 11) +
   theme(
@@ -305,39 +325,101 @@ theme_paper <- theme_bw(base_size = 11) +
 
 dimension_metric_data <- melt(
   summary_long,
-  id.vars = setting_columns,
-  measure.vars = c(
-    "sseU_pixel_mean", "sseV_pixel_mean", "reliseK_mean", "relsiseC_mean"
+  id.vars = c(setting_columns, "n_rep"),
+  measure.vars = list(
+    mean_error = c(
+      "sseU_pixel_mean", "sseV_pixel_mean", "reliseK_mean", "relsiseC_mean"
+    ),
+    sd_error = c(
+      "sseU_pixel_sd", "sseV_pixel_sd", "reliseK_sd", "relsiseC_sd"
+    )
   ),
-  variable.name = "metric",
-  value.name = "mean_error"
+  variable.name = "metric_index"
 )
 dimension_metric_data[
   ,
   metric := factor(
-    metric,
-    levels = c(
-      "sseU_pixel_mean", "sseV_pixel_mean", "reliseK_mean", "relsiseC_mean"
-    ),
+    metric_index,
+    levels = 1:4,
     labels = c(
       "U pixel MSE", "V pixel MSE", "K relative ISE", "Full covariance"
     )
   )
 ]
+dimension_metric_data[
+  ,
+  `:=`(
+    weight_label = factor(
+      weight,
+      levels = c("identity", "gaussian_refined"),
+      labels = c("Identity", "Gaussian-refined")
+    ),
+    distr_label = factor(
+      distr,
+      levels = c("normal", "uniform", "beta32", "t5"),
+      labels = c("Gaussian", "Uniform", "Beta(3,2)", "t(5)")
+    ),
+    mcse = sd_error / sqrt(n_rep)
+  )
+]
+dimension_metric_data[
+  ,
+  `:=`(
+    error_lower = mean_error * exp(-1.96 * mcse / mean_error),
+    error_upper = mean_error * exp(1.96 * mcse / mean_error)
+  )
+]
 
 dimension_data <- dimension_metric_data[
-  n == 50 & sig == 0.5 & distr == "normal" &
+  n == 50 & sig == 0.5 & dependence == "independent" &
     p %in% seq(20, 200, 10)
 ]
 dimension_plot <- ggplot(
   dimension_data,
-  aes(p, mean_error, color = weight, shape = weight)
+  aes(p, mean_error, color = weight_label, shape = weight_label)
 ) +
+  geom_ribbon(
+    aes(
+      ymin = error_lower, ymax = error_upper,
+      fill = weight_label, group = weight_label
+    ),
+    alpha = 0.12,
+    color = NA
+  ) +
+  geom_line() +
+  geom_point(size = 2) +
+  scale_y_log10() +
+  facet_grid(metric ~ distr_label, scales = "free_y") +
+  labs(
+    x = "Spatial dimension (p = q)", y = "Mean error",
+    color = "Weighting", shape = "Weighting", fill = "Weighting"
+  ) +
+  theme_paper
+
+dependent_dimension_data <- dimension_metric_data[
+  n == 50 & sig == 0.5 & distr == "normal" &
+    dependence != "independent" & p %in% seq(20, 200, 10)
+]
+dependent_dimension_plot <- ggplot(
+  dependent_dimension_data,
+  aes(p, mean_error, color = weight_label, shape = weight_label)
+) +
+  geom_ribbon(
+    aes(
+      ymin = error_lower, ymax = error_upper,
+      fill = weight_label, group = weight_label
+    ),
+    alpha = 0.12,
+    color = NA
+  ) +
   geom_line() +
   geom_point(size = 2) +
   scale_y_log10() +
   facet_grid(metric ~ dependence, scales = "free_y") +
-  labs(x = "Spatial dimension (p = q)", y = "Mean error") +
+  labs(
+    x = "Spatial dimension (p = q)", y = "Mean error",
+    color = "Weighting", shape = "Weighting", fill = "Weighting"
+  ) +
   theme_paper
 
 sample_size_data <- plot_data[
@@ -346,13 +428,16 @@ sample_size_data <- plot_data[
 ]
 sample_size_plot <- ggplot(
   sample_size_data,
-  aes(n, mean_error, color = weight, shape = weight)
+  aes(n, mean_error, color = weight_label, shape = weight_label)
 ) +
   geom_line() +
   geom_point(size = 2) +
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
-  labs(x = "Number of subjects", y = "Mean relative error") +
+  labs(
+    x = "Number of subjects", y = "Mean relative error",
+    color = "Weighting", shape = "Weighting"
+  ) +
   theme_paper
 
 noise_data <- plot_data[
@@ -361,13 +446,16 @@ noise_data <- plot_data[
 ]
 noise_plot <- ggplot(
   noise_data,
-  aes(sig, mean_error, color = weight, shape = weight)
+  aes(sig, mean_error, color = weight_label, shape = weight_label)
 ) +
   geom_line() +
   geom_point(size = 2) +
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
-  labs(x = "Noise standard deviation", y = "Mean relative error") +
+  labs(
+    x = "Noise standard deviation", y = "Mean relative error",
+    color = "Weighting", shape = "Weighting"
+  ) +
   theme_paper
 
 distribution_data <- plot_data[
@@ -375,13 +463,19 @@ distribution_data <- plot_data[
 ]
 distribution_plot <- ggplot(
   distribution_data,
-  aes(distr, mean_error, color = weight, shape = weight, group = weight)
+  aes(
+    distr_label, mean_error, color = weight_label, shape = weight_label,
+    group = weight_label
+  )
 ) +
   geom_line() +
   geom_point(size = 2) +
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
-  labs(x = "FPC-score distribution", y = "Mean relative error") +
+  labs(
+    x = "FPC-score distribution", y = "Mean relative error",
+    color = "Weighting", shape = "Weighting"
+  ) +
   theme_paper
 
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
@@ -410,6 +504,10 @@ save_plot_if_data <- function(data, plot, filename, width, height) {
 
 save_plot_if_data(
   dimension_data, dimension_plot, "error_vs_dimension.pdf", 11, 8
+)
+save_plot_if_data(
+  dependent_dimension_data, dependent_dimension_plot,
+  "error_vs_dimension_dependent.pdf", 11, 8
 )
 save_plot_if_data(
   sample_size_data, sample_size_plot, "error_vs_sample_size.pdf", 8, 5

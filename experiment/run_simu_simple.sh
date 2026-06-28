@@ -109,6 +109,7 @@ declare -A class_task_count
 config_count=0
 
 DIMENSIONS=(20 30 40 50 60 70 80 90 100 110 120 130 140 150 160 170 180 190 200)
+DISTRIBUTIONS=(normal uniform beta32 t5)
 RESOURCE_CLASSES=(small medium large)
 
 cpus_for_class() {
@@ -204,9 +205,12 @@ for n in 25 50 100; do
   add_config "${n}" 30 0.5 normal independent 0
 done
 
-# Spatial-dimension series.
+# Primary study: fully cross spatial dimension and marginal score distribution
+# under independent FPC scores.
 for p in "${DIMENSIONS[@]}"; do
-  add_config 50 "${p}" 0.5 normal independent 0
+  for distribution in "${DISTRIBUTIONS[@]}"; do
+    add_config 50 "${p}" 0.5 "${distribution}" independent 0
+  done
 done
 
 # Noise series.
@@ -214,12 +218,7 @@ for sigma in 0 0.5 1; do
   add_config 50 30 "${sigma}" normal independent 0
 done
 
-# Marginal score-distribution series under independence.
-for distribution in normal uniform beta32 t5; do
-  add_config 50 30 0.5 "${distribution}" independent 0
-done
-
-# Dependence-by-dimension series.
+# Extension: dependence-by-dimension series at the Gaussian marginal.
 # common_amplitude: finite fourth moments, dense dependence among squares.
 # common_signed: one common magnitude with independent coordinate signs.
 # heavy_amplitude: Pareto A^2 with index 1.5, finite variance of scores but

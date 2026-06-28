@@ -31,15 +31,15 @@ fit_identity <- fit_matfcov(
   noise = TRUE,
   nbasis = "theory"
 )
-fit_optimal <- fit_matfcov(
+fit_refined <- fit_matfcov(
   generated$data,
-  wScheme = "optimal",
+  wScheme = "gaussian_refined",
   noise = TRUE,
   nbasis = "theory",
   opwIter = 2
 )
 
-for (fit in list(fit_identity, fit_optimal)) {
+for (fit in list(fit_identity, fit_refined)) {
   covariance <- fit$C
   stopifnot(
     abs(tr(covariance$U) - 6) < 1e-8,
@@ -55,8 +55,29 @@ for (fit in list(fit_identity, fit_optimal)) {
 
 stopifnot(
   is.null(fit_identity$W),
-  inherits(fit_optimal$W, "mode_weights"),
-  is(fit_optimal$pilot, "matfcov")
+  inherits(fit_refined$W, "mode_weights"),
+  inherits(fit_refined$W, "gaussian_refined"),
+  is(fit_refined$pilot, "matfcov")
+)
+
+# At exactly zero noise, the Gaussian-refined formula must reduce to the
+# plug-in inverse-covariance scheme.
+U_test <- diag(c(2, 1))
+V_test <- diag(c(3, 1.5, 0.75))
+LK_test <- list(diag(c(2, 1)), diag(c(1.5, 0.5, 0.25)))
+weights_refined_zero <- compute_W(
+  U_test, V_test, LK_test,
+  sig2 = 0,
+  wScheme = "gaussian_refined"
+)
+weights_inverse <- compute_W(
+  U_test, V_test, LK_test,
+  sig2 = 0,
+  wScheme = "invcov"
+)
+stopifnot(
+  inherits(weights_refined_zero, "shared"),
+  isTRUE(all.equal(weights_refined_zero, weights_inverse))
 )
 
 cat("Two-step estimator checks passed.\n")

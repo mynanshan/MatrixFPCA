@@ -118,7 +118,20 @@ get_working_U <- function(X, W2, W3) {
 
 ###### Weight matrices ######
 
-WEIGHT_SCHEMES <- c("identity", "invcov", "invridcov", "optimal") 
+WEIGHT_SCHEMES <- c(
+  "identity", "invcov", "invridcov", "gaussian_refined"
+)
+
+match_weight_scheme <- function(wScheme, choices = WEIGHT_SCHEMES) {
+  if (length(wScheme) == 1L && identical(wScheme, "optimal")) {
+    warning(
+      "wScheme = 'optimal' is deprecated; use 'gaussian_refined'.",
+      call. = FALSE
+    )
+    wScheme <- "gaussian_refined"
+  }
+  match.arg(wScheme, choices)
+}
 
 compute_W <- function(
   U, V, LK,
@@ -128,16 +141,16 @@ compute_W <- function(
   rescale.opt = TRUE,
   ridge.opt = 1e-8
 ) {
-  wScheme <- match.arg(wScheme)
+  wScheme <- match_weight_scheme(wScheme)
   eps <- 10 * .Machine$double.eps
 
-  if (sig2 <= eps && wScheme %in% c("optimal", "invridcov")) {
+  if (sig2 <= eps && wScheme %in% c("gaussian_refined", "invridcov")) {
     wScheme <- "invcov"
   }
 
-  if (wScheme == "optimal") {
+  if (wScheme == "gaussian_refined") {
     W0 <- compute_W.shared(U, V, LK, sig2, "invridcov", eps)
-    return(compute_W.optimal(
+    return(compute_W.gaussian_refined(
       U, V, LK, sig2,
       W0$W1, W0$W2, W0$W3,
       nIter = nIter.opt,
@@ -196,7 +209,7 @@ compute_W.shared <- function(U, V, LK, sig2, wScheme, eps = 1e-10) {
   sum(W * W)
 }
 
-compute_W.optimal <- function(
+compute_W.gaussian_refined <- function(
   U, V, LK, sig2,
   W1_init, W2_init, W3_init,
   nIter = 1,
@@ -352,8 +365,16 @@ compute_W.optimal <- function(
     V = list(W1 = W1V, W3 = W3V),
     K = list(W1 = W1K, W2 = W2K)
   )
-  class(W) <- c("mode_weights", "optimal")
+  class(W) <- c("mode_weights", "gaussian_refined")
   W
+}
+
+# Backward-compatible entry point for code written before the method was
+# renamed. The weights use Gaussian fourth-moment identities, but are not
+# generally optimal after the covariance factors and noise are estimated.
+compute_W.optimal <- function(...) {
+  .Deprecated("compute_W.gaussian_refined")
+  compute_W.gaussian_refined(...)
 }
 
 get_W <- function(W, m, target = c("U", "V", "K")) {
@@ -766,7 +787,10 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   opwIter = 3
 ) {
   stopifnot(inherits(data, "matfdata.irreg"), is(pilot, "matfcov"))
-  wScheme <- match.arg(wScheme, setdiff(WEIGHT_SCHEMES, "identity"))
+  wScheme <- match_weight_scheme(
+    wScheme,
+    setdiff(WEIGHT_SCHEMES, "identity")
+  )
 
   p <- data$vdim[1]
   q <- data$vdim[2]
@@ -842,7 +866,7 @@ fit_matfcov <- function(
   ndeg = 3,
   opwIter = 3
 ) {
-  wScheme <- match.arg(wScheme)
+  wScheme <- match_weight_scheme(wScheme)
   stopifnot(inherits(data, "matfdata.irreg"))
 
   pilot_fit <- .fit_matfcov_identity(

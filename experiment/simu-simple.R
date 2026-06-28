@@ -222,7 +222,15 @@ eig_true <- genData$eig
 
 # The heuristic inverse-covariance schemes remain available in fit_matfcov(),
 # but paper simulations compare only the two estimators defined in the theory.
-weight_schemes <- c("identity", "optimal")
+# "Gaussian-refined" is descriptive rather than claiming global optimality:
+# its refinement uses the Gaussian fourth-moment calculation.
+weight_schemes <- c("identity", "gaussian_refined")
+
+# In this simulation the noise setting is known. In particular, sigma = 0
+# must enter the exact noiseless branch, where Gaussian-refined weights reduce
+# to plug-in inverse-covariance weights. Estimating a nonnegative noise level
+# at this boundary otherwise produces a small positive pilot value.
+estimate_noise <- sig > 0
 
 evaluate_fit <- function(fit, truth) {
   estimate <- fit$C
@@ -247,7 +255,7 @@ fit_results <- lapply(weight_schemes, function(scheme) {
   fit <- fit_matfcov(
     data,
     wScheme = scheme,
-    noise = TRUE,
+    noise = estimate_noise,
     nbasis = nbasis,
     opwIter = 3
   )
