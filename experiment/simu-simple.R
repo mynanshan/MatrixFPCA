@@ -215,8 +215,7 @@ genData <- gen_data_simple(
 data <- genData$data
 cov_true <- genData$cov
 eig_true <- genData$eig
-# scores_true <- genData$scores
-# X_true = recover_matfdata(eig_true$funcs, scores_true)
+scores_true <- genData$scores
 
 # Estimation --------------------------------------------------------------
 
@@ -232,7 +231,7 @@ weight_schemes <- c("identity", "gaussian_refined")
 # at this boundary otherwise produces a small positive pilot value.
 estimate_noise <- sig > 0
 
-evaluate_fit <- function(fit, truth) {
+evaluate_covariance_fit <- function(fit, truth) {
   estimate <- fit$C
   sseU <- matFNorm2(estimate$U - truth$U)
   sseV <- matFNorm2(estimate$V - truth$V)
@@ -250,45 +249,90 @@ evaluate_fit <- function(fit, truth) {
   )
 }
 
+evaluate_reconstruction <- function(fit, data, eig_true, scores_true) {
+  eig_hat <- eigen.matfcov(fit$C)
+  eig_hat <- trunc.matfeigen(eig_hat, verbose = FALSE)
+  scores_hat <- get_matfpca_scores(data, eig_hat)
+
+  # Reconstruct one subject at a time to avoid materializing two potentially
+  # very large n x p x q x nt tensors at once.
+  squared_error <- 0
+  squared_truth <- 0
+  n_values <- 0
+  for (i in seq_len(count_subj(data))) {
+    scores_hat_i <- as.tensor(scores_hat@data[i, , , , drop = FALSE])
+    scores_true_i <- as.tensor(scores_true@data[i, , , , drop = FALSE])
+    X_hat_i <- recover_matfdata(eig_hat$funcs, scores_hat_i)@data
+    X_true_i <- recover_matfdata(eig_true$funcs, scores_true_i)@data
+
+    squared_error <- squared_error + sum((X_hat_i - X_true_i)^2)
+    squared_truth <- squared_truth + sum(X_true_i^2)
+    n_values <- n_values + length(X_true_i)
+  }
+
+  c(
+    mseX = squared_error / n_values,
+    relmseX = squared_error / squared_truth
+  )
+}
+
 fit_results <- lapply(weight_schemes, function(scheme) {
   cat("==== Start Estimation:", scheme, "weights ====\n")
-  fit <- fit_matfcov(
-    data,
-    wScheme = scheme,
-    noise = estimate_noise,
-    nbasis = nbasis,
-    opwIter = 3
+  fit_timing <- system.time({
+    fit <- fit_matfcov(
+      data,
+      wScheme = scheme,
+      noise = estimate_noise,
+      nbasis = nbasis,
+      opwIter = 3
+    )
+  })
+  runtime <- unname(fit_timing[["elapsed"]])
+  metrics <- c(
+    evaluate_covariance_fit(fit, cov_true),
+    evaluate_reconstruction(fit, data, eig_true, scores_true)
   )
-  metrics <- evaluate_fit(fit, cov_true)
   cat(
     ">>>>> Weighting scheme: ", scheme, "\n",
+    "Runtime (seconds): ", runtime, "\n",
     "Rel. SSE (U): ", metrics[["relsseU"]], "\n",
     "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
     "Rel. ISE (K): ", metrics[["reliseK"]], "\n",
     "Rel. SISE (C): ", metrics[["relsiseC"]], "\n",
+    "MSE (X): ", metrics[["mseX"]], "\n",
+    "Rel. MSE (X): ", metrics[["relmseX"]], "\n",
     sep = ""
   )
-  list(fit = fit, metrics = metrics)
+  list(fit = fit, metrics = metrics, runtime = runtime)
 })
 names(fit_results) <- weight_schemes
 
 
-# par(mfrow=c(3,2), mar=c(2,1,1,1), oma=c(0,2,2,0))
-# rangeK <- range(c(cov_true$K, cov_hat$K))
-# tile_plot.matrix(cov_true$K, zlim=rangeK)
-# mtext("K", side=2, line=1.5)
-# mtext("True", side=3, line=1)
-# tile_plot.matrix(cov_hat$K)
-# mtext("Estimate", side=3, line=1)
-# rangeU <- range(c(cov_true$U, cov_hat$U))
-# tile_plot.matrix(cov_true$U, zlim=rangeU)
-# mtext("U", side=2, line=1.5)
-# tile_plot.matrix(cov_hat$U)
-# rangeV <- range(c(cov_true$V, cov_hat$V))
-# tile_plot.matrix(cov_true$V, zlim=rangeV)
-# mtext("V", side=2, line=1.5)
-# tile_plot.matrix(cov_hat$V)
-# par(pa)
+plot_covariance_fit <- function(cov_hat, cov_true, scheme) {
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+  par(mfrow = c(3, 2), mar = c(2, 1, 1, 1), oma = c(0, 2, 3, 0))
+
+  for (component in c("K", "U", "V")) {
+    value_range <- range(c(cov_true[[component]], cov_hat[[component]]))
+    tile_plot.matrix(cov_true[[component]], zlim = value_range)
+    mtext(component, side = 2, line = 1.5)
+    if (component == "K") mtext("True", side = 3, line = 1)
+
+    tile_plot.matrix(cov_hat[[component]], zlim = value_range)
+    if (component == "K") mtext("Estimate", side = 3, line = 1)
+  }
+  mtext(
+    paste("Marginal covariance estimates:", scheme, "weights"),
+    side = 3, outer = TRUE, line = 1
+  )
+}
+
+if (interactive()) {
+  for (scheme in weight_schemes) {
+    plot_covariance_fit(fit_results[[scheme]]$fit$C, cov_true, scheme)
+  }
+}
 
 # evaluate eigen estimation
 # eig_obj = eigen.matfcov(cov_hat)
@@ -382,7 +426,8 @@ if (ifsave) {
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
     "s1", "s2", "nt",
     "sseU", "sseV", "iseK", "siseC",
-    "relsseU", "relsseV", "reliseK", "relsiseC"
+    "relsseU", "relsseV", "reliseK", "relsiseC",
+    "mseX", "relmseX", "runtime"
   )
 
   formatter <- function(x, digits = 7, logarithm = TRUE) {
@@ -392,6 +437,7 @@ if (ifsave) {
 
   output_rows <- lapply(weight_schemes, function(scheme) {
     metrics <- fit_results[[scheme]]$metrics
+    runtime <- fit_results[[scheme]]$runtime
     as.list(stats::setNames(c(
       "MatFPCA", seed, scheme,
       n, p, q, sig, scores_distr, score_dependence, dependence_param,
@@ -403,7 +449,10 @@ if (ifsave) {
       formatter(metrics[["relsseU"]]),
       formatter(metrics[["relsseV"]]),
       formatter(metrics[["reliseK"]]),
-      formatter(metrics[["relsiseC"]])
+      formatter(metrics[["relsiseC"]]),
+      formatter(metrics[["mseX"]]),
+      formatter(metrics[["relmseX"]]),
+      formatter(runtime, logarithm = FALSE)
     ), header))
   })
   data.table::fwrite(

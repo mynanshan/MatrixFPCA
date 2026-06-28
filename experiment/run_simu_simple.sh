@@ -28,7 +28,13 @@ RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/experiment/results}"
 LOG_DIR="${ROOT_DIR}/logs"
 MANIFEST_DIR="${LOG_DIR}/manifests"
 R_COMMAND="${R_COMMAND:-Rscript}"
-TIME_COMMAND="${TIME_COMMAND:-/usr/bin/time}"
+TIME_COMMAND="${TIME_COMMAND:-}"
+if [[ -z "${TIME_COMMAND}" && -x /usr/bin/time ]]; then
+  TIME_COMMAND="/usr/bin/time"
+elif [[ -n "${TIME_COMMAND}" ]] && ! command -v "${TIME_COMMAND}" >/dev/null 2>&1; then
+  echo "Warning: TIME_COMMAND=${TIME_COMMAND} is unavailable; running without it." >&2
+  TIME_COMMAND=""
+fi
 
 run_array_task() {
   local manifest="$1"
@@ -61,26 +67,34 @@ run_array_task() {
   # Compute Canada settings
   export FLEXIBLAS=IMKL
 
-  "${TIME_COMMAND}" -v "${R_COMMAND}" "${SIM_SCRIPT}" \
-    --n_subjects "${n}" \
-    --n_time_points 51 \
-    --s_obs_min 2 \
-    --s_obs_max 4 \
-    --d_row "${p}" \
-    --d_col "${p}" \
-    --noise_lvl "${sigma}" \
-    --rank_row 0 \
-    --rank_col 0 \
-    --rank_time 5 \
-    --nbasis 0 \
-    --eigset 2 \
-    --scores_distr "${distribution}" \
-    --score_dependence "${dependence}" \
-    --dependence_param "${dep_param}" \
-    --seed "${seed}" \
-    --save 1 \
-    --results_dir "${RESULTS_DIR}" \
+  local -a sim_command=(
+    "${R_COMMAND}" "${SIM_SCRIPT}"
+    --n_subjects "${n}"
+    --n_time_points 51
+    --s_obs_min 2
+    --s_obs_max 4
+    --d_row "${p}"
+    --d_col "${p}"
+    --noise_lvl "${sigma}"
+    --rank_row 0
+    --rank_col 0
+    --rank_time 5
+    --nbasis 0
+    --eigset 2
+    --scores_distr "${distribution}"
+    --score_dependence "${dependence}"
+    --dependence_param "${dep_param}"
+    --seed "${seed}"
+    --save 1
+    --results_dir "${RESULTS_DIR}"
     --manual 0
+  )
+
+  if [[ -n "${TIME_COMMAND}" ]]; then
+    "${TIME_COMMAND}" -v "${sim_command[@]}"
+  else
+    "${sim_command[@]}"
+  fi
 }
 
 if [[ "${1:-}" == "--worker" ]]; then
