@@ -17,9 +17,9 @@ tests/testthat/_snaps/*.new
 **/*_files/
 
 # Generated project artifacts
-**/results/
-**/plots/
-**/summary/
+**/results*/
+**/plots*/
+**/summary*/
 **/output_files/
 **/deprecated/
 *.rds
