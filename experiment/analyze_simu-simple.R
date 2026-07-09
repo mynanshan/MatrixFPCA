@@ -48,10 +48,17 @@ if (!"dependence_param" %in% names(res)) {
 }
 if (!"dependence" %in% names(res)) res[, dependence := "independent"]
 if (!"distr" %in% names(res)) res[, distr := "unknown"]
+if (!"rank_row" %in% names(res)) res[, rank_row := p]
+if (!"rank_col" %in% names(res)) res[, rank_col := q]
+if (!"rank_time" %in% names(res)) res[, rank_time := 5]
+if (!"eigensystem" %in% names(res)) res[, eigensystem := "legacy"]
+if (!"eigvec_set" %in% names(res)) res[, eigvec_set := 2]
+if (!"eigval_set" %in% names(res)) res[, eigval_set := 1]
 
 required <- c(
   "seed", "weight", "n", "p", "q", "sig", "distr", "dependence",
-  "dependence_param", "s1", "s2", "nt",
+  "dependence_param", "s1", "s2", "nt", "rank_row", "rank_col",
+  "rank_time", "eigensystem", "eigvec_set", "eigval_set",
   "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC"
 )
 missing <- setdiff(required, names(res))
@@ -61,6 +68,7 @@ if (length(missing)) {
 
 numeric_columns <- c(
   "seed", "n", "p", "q", "sig", "dependence_param", "s1", "s2", "nt",
+  "rank_row", "rank_col", "rank_time", "eigvec_set", "eigval_set",
   "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC"
 )
 res[, (numeric_columns) := lapply(.SD, as.numeric), .SDcols = numeric_columns]
@@ -100,11 +108,18 @@ read_expected_from_manifests <- function(manifest_dirs) {
   )
   expected[, q := p]
   expected[, `:=`(s1 = 2, s2 = 4, nt = 51)]
+  if (!"eigensystem" %in% names(expected)) expected[, eigensystem := "legacy"]
+  if (!"eigvec_set" %in% names(expected)) expected[, eigvec_set := 2]
+  if (!"eigval_set" %in% names(expected)) expected[, eigval_set := 1]
+  if (!"rank_time" %in% names(expected)) expected[, rank_time := 5]
+  if (!"rank_row" %in% names(expected)) expected[, rank_row := p]
+  if (!"rank_col" %in% names(expected)) expected[, rank_col := q]
   expected[
     ,
     .(
       config_id, seed, n, p, q, sig, distr, dependence, dependence_param,
-      s1, s2, nt
+      s1, s2, nt, rank_row, rank_col, rank_time, eigensystem,
+      eigvec_set, eigval_set
     )
   ]
 }
@@ -120,14 +135,22 @@ make_expected_configs <- function(repetitions) {
     dependence_param = numeric(),
     s1 = numeric(),
     s2 = numeric(),
-    nt = numeric()
+    nt = numeric(),
+    rank_row = numeric(),
+    rank_col = numeric(),
+    rank_time = numeric(),
+    eigensystem = character(),
+    eigvec_set = numeric(),
+    eigval_set = numeric()
   )
 
   add_config <- function(n, p, sig, distr, dependence, dependence_param) {
     candidate <- data.table(
       n = n, p = p, q = p, sig = sig, distr = distr,
       dependence = dependence, dependence_param = dependence_param,
-      s1 = 2, s2 = 4, nt = 51
+      s1 = 2, s2 = 4, nt = 51,
+      rank_row = p, rank_col = p, rank_time = 5,
+      eigensystem = "legacy", eigvec_set = 2, eigval_set = 1
     )
     configs <<- unique(rbind(configs, candidate, use.names = TRUE))
   }
@@ -139,7 +162,7 @@ make_expected_configs <- function(repetitions) {
       add_config(50, p, 0.5, distr, "independent", 0)
     }
   }
-  for (sig in c(0, 0.5, 1)) add_config(50, 30, sig, "normal", "independent", 0)
+  for (sig in c(0.1, 0.5, 1)) add_config(50, 30, sig, "normal", "independent", 0)
   for (p in dimension_grid) {
     add_config(50, p, 0.5, "normal", "common_amplitude", 1)
     add_config(50, p, 0.5, "normal", "common_signed", 0)
@@ -155,14 +178,16 @@ make_expected_configs <- function(repetitions) {
     ,
     .(
       config_id, seed, n, p, q, sig, distr, dependence, dependence_param,
-      s1, s2, nt
+      s1, s2, nt, rank_row, rank_col, rank_time, eigensystem,
+      eigvec_set, eigval_set
     )
   ]
 }
 
 run_columns <- c(
   "seed", "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-  "s1", "s2", "nt"
+  "s1", "s2", "nt", "rank_row", "rank_col", "rank_time", "eigensystem",
+  "eigvec_set", "eigval_set"
 )
 setting_columns_no_weight <- setdiff(run_columns, "seed")
 
@@ -223,7 +248,8 @@ res[, sseV_pixel_raw := sseV_raw / q^2]
 
 setting_columns <- c(
   "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-  "s1", "s2", "nt", "weight"
+  "s1", "s2", "nt", "rank_row", "rank_col", "rank_time",
+  "eigensystem", "eigvec_set", "eigval_set", "weight"
 )
 
 summary_long <- res[
@@ -254,7 +280,8 @@ setorder(
 
 summary_wide <- dcast(
   summary_long,
-  n + p + q + sig + distr + dependence + dependence_param + s1 + s2 + nt ~
+  n + p + q + sig + distr + dependence + dependence_param + s1 + s2 + nt +
+    rank_row + rank_col + rank_time + eigensystem + eigvec_set + eigval_set ~
     weight,
   value.var = c(
     "n_rep",
@@ -270,7 +297,8 @@ summary_wide <- dcast(
 paired <- dcast(
   res,
   seed + n + p + q + sig + distr + dependence + dependence_param +
-    s1 + s2 + nt ~ weight,
+    s1 + s2 + nt + rank_row + rank_col + rank_time + eigensystem +
+    eigvec_set + eigval_set ~ weight,
   value.var = paste0(metric_columns, "_raw")
 )
 for (metric in metric_columns) {

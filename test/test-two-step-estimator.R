@@ -22,7 +22,8 @@ generated <- gen_data_simple(
 stopifnot(
   identical(dim(generated$scores), c(20L, 6L, 5L, 3L)),
   abs(mean(generated$subject_amplitude^2) - 1) < 0.75,
-  !"maxIter" %in% names(formals(fit_matfcov))
+  !"maxIter" %in% names(formals(fit_matfcov)),
+  "temporal_method" %in% names(formals(fit_matfcov))
 )
 
 fit_identity <- fit_matfcov(
@@ -38,8 +39,23 @@ fit_refined <- fit_matfcov(
   nbasis = "theory",
   opwIter = 2
 )
+fit_joint_identity <- fit_matfcov(
+  generated$data,
+  wScheme = "identity",
+  noise = TRUE,
+  nbasis = "theory",
+  temporal_method = "joint"
+)
+fit_joint_refined <- fit_matfcov(
+  generated$data,
+  wScheme = "gaussian_refined",
+  noise = TRUE,
+  nbasis = "theory",
+  opwIter = 2,
+  temporal_method = "joint"
+)
 
-for (fit in list(fit_identity, fit_refined)) {
+for (fit in list(fit_identity, fit_refined, fit_joint_identity, fit_joint_refined)) {
   covariance <- fit$C
   stopifnot(
     abs(tr(covariance$U) - 6) < 1e-8,
@@ -49,7 +65,8 @@ for (fit in list(fit_identity, fit_refined)) {
     min(eigen(covariance$K, symmetric = TRUE, only.values = TRUE)$values) > -1e-8,
     covariance$sig2 >= 0,
     identical(names(fit$temporal_fit$fit), c("K", "G")),
-    identical(names(fit$temporal_fit$nbasis), c("K", "G"))
+    identical(names(fit$temporal_fit$nbasis), c("K", "G")),
+    fit$temporal_fit$temporal_method %in% c("two_step", "joint")
   )
 }
 
@@ -80,4 +97,4 @@ stopifnot(
   isTRUE(all.equal(weights_refined_zero, weights_inverse))
 )
 
-cat("Two-step estimator checks passed.\n")
+cat("Temporal estimator checks passed.\n")

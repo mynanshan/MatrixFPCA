@@ -60,7 +60,15 @@ parser$add_argument("-nb", "--nbasis",
 )
 parser$add_argument("-set", "--eigset",
   type = "integer", default = 2,
-  help = "Which data generation settings."
+  help = "Which spatial eigenvector setting."
+)
+parser$add_argument("-eval", "--eigvalset",
+  type = "integer", default = 1,
+  help = "Which eigenvalue decay setting."
+)
+parser$add_argument("--eigensystem",
+  type = "character", default = "custom",
+  help = "Label for the data-generating eigensystem."
 )
 parser$add_argument("-scd", "--scores_distr",
   type = "character", default = "normal",
@@ -131,6 +139,8 @@ npc_time <- min(max(rt, 1), nt)
 nbasis <- if (args[["nbasis"]] <= 0) "theory" else
   min(max(args[["nbasis"]], 3), nt)
 eigset <- args[["eigset"]]
+eigvalset <- args[["eigvalset"]]
+eigensystem <- args[["eigensystem"]]
 scores_distr <- args[["scores_distr"]]
 score_dependence <- args[["score_dependence"]]
 dependence_param <- args[["dependence_param"]]
@@ -164,6 +174,9 @@ cat(
   "npc_row=", npc_row, "\n",
   "npc_col=", npc_col, "\n",
   "npc_time=", npc_time, "\n",
+  "eigensystem=", eigensystem, "\n",
+  "eigvecSet=", eigset, "\n",
+  "eigvalSet=", eigvalset, "\n",
   "scores_distr=", scores_distr, "\n",
   "score_dependence=", score_dependence, "\n",
   "dependence_param=", dependence_param, "\n"
@@ -207,6 +220,7 @@ genData <- gen_data_simple(
   sampling_ratio = sampling_ratio,
   sig = sig,
   eigvecSet = eigset,
+  eigvalSet = eigvalset,
   scores_distr = scores_distr,
   score_dependence = score_dependence,
   dependence_param = dependence_param
@@ -415,7 +429,9 @@ if (ifsave) {
     "_s", s1, "-", s2,
     "_nt", nt,
     "_r", npc_row, "-", npc_col, "-", npc_time,
-    "_set", eigset,
+    "_eig", file_token(eigensystem),
+    "_evc", eigset,
+    "_evl", eigvalset,
     "_sd", seed
   )
   file_name <- paste0("simu", file_id, ".csv")
@@ -424,7 +440,8 @@ if (ifsave) {
   header <- c(
     "method", "seed", "weight",
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-    "s1", "s2", "nt",
+    "s1", "s2", "nt", "rank_row", "rank_col", "rank_time",
+    "eigensystem", "eigvec_set", "eigval_set",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC",
     "mseX", "relmseX", "runtime"
@@ -441,7 +458,8 @@ if (ifsave) {
     as.list(stats::setNames(c(
       "MatFPCA", seed, scheme,
       n, p, q, sig, scores_distr, score_dependence, dependence_param,
-      s1, s2, nt,
+      s1, s2, nt, npc_row, npc_col, npc_time,
+      eigensystem, eigset, eigvalset,
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),
       formatter(metrics[["iseK"]]),

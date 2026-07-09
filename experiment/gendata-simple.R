@@ -44,6 +44,8 @@ gen_data_simple <- function(
     )[,2:(npc_col+1)]
     Phi = qr.Q(qr(Phi))
     Psi = qr.Q(qr(Psi))
+  } else {
+    stop("eigvecSet must be 1 or 2.")
   }
   theta_funcs = function(x, npc) fda::fourier(x, nbasis = npc)
   theta_mat = theta_funcs(t_grid, npc_time)
@@ -55,8 +57,14 @@ gen_data_simple <- function(
   } else if (eigvalSet == 2) {
     lam_phi = 2 * (1:npc_row)^(-1.2)
     lam_psi = 2 * (1:npc_col)^(-1.3)
+  } else {
+    stop("eigvalSet must be 1 or 2.")
   }
-  lam_theta = 2 * (1:npc_time)^(-2.0)
+  if (eigvalSet == 1) {
+    lam_theta = 2 * (1:npc_time)^(-2.0)
+  } else if (eigvalSet == 2) {
+    lam_theta = 2 * (1:npc_time)^(-2.5)
+  }
 
   scale_U <- sum(lam_phi) / p
   scale_V <- sum(lam_psi) / q

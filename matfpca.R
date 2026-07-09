@@ -390,18 +390,57 @@ get_W <- function(W, m, target = c("U", "V", "K")) {
 
 ###### Update U,V,K ######
 
+.spatial_replication_factor <- function(
+  p, q,
+  U_tilde = NULL,
+  V_tilde = NULL,
+  c_delta = 0.5
+) {
+  p <- as.numeric(p)[1L]
+  q <- as.numeric(q)[1L]
+  c_delta <- as.numeric(c_delta)[1L]
+  if (!is.finite(p) || !is.finite(q) || p < 1 || q < 1) {
+    stop("p and q must be positive finite dimensions.")
+  }
+  fallback <- c_delta * p * q
+
+  if (!is.null(U_tilde) && !is.null(V_tilde)) {
+    norm_U2 <- sum(U_tilde * U_tilde)
+    norm_V2 <- sum(V_tilde * V_tilde)
+    if (is.finite(norm_U2) && is.finite(norm_V2) &&
+        norm_U2 > 0 && norm_V2 > 0) {
+      fallback <- c_delta * p^2 / norm_U2 * q^2 / norm_V2
+    }
+  }
+
+  if (!is.finite(fallback) || fallback <= 0) fallback <- 1
+  min(max(fallback, 1), p * q)
+}
+
 choose.nbasis <- function(
   nbasis = "theory",
   nbasis.min = NULL,
+  nbasis.min.K = NULL,
+  nbasis.min.G = NULL,
   ndeg = 3,
   ndiag,
   noffdiag,
-  nloc
+  nloc,
+  Nis = NULL,
+  p = NULL,
+  q = NULL,
+  U_tilde = NULL,
+  V_tilde = NULL,
+  c_delta = 0.5,
+  smooth_order = 2,
+  basis_multiplier.K = 3,
+  basis_multiplier.G = 1,
+  obs_per_basis.K = 8,
+  obs_per_basis.G = 8
 ) {
   # Return separate marginal basis dimensions for the bivariate K smoother
-  # and the univariate G smoother. The automatic rule follows the balanced
-  # sieve orders J ~ N^(1/(2m+2)) and L ~ N^(1/(2m)), with finite-sample
-  # lower bounds and design-rank caps.
+  # and the univariate G smoother. The default rule follows the theoretical
+  # rate orders with practical constants, then caps by observed design rows.
   if (is.numeric(nbasis)) {
     if (!length(nbasis) %in% 1:2 || any(!is.finite(nbasis))) {
       stop("Numeric nbasis must have length one or two.")
@@ -416,27 +455,73 @@ choose.nbasis <- function(
 
   nbasis.min <- if (is.null(nbasis.min)) max(5L, as.integer(ndeg) + 2L) else
     as.integer(nbasis.min)
-  if (nloc < nbasis.min) {
+  nbasis.min.K <- if (is.null(nbasis.min.K)) nbasis.min else
+    as.integer(nbasis.min.K)
+  nbasis.min.G <- if (is.null(nbasis.min.G)) nbasis.min else
+    as.integer(nbasis.min.G)
+  if (nloc < max(nbasis.min.K, nbasis.min.G)) {
     stop("Too few unique time locations for the requested spline degree.")
   }
 
   if (nbasis == "theory") {
-    J <- nbasis.min - 1L + ceiling(noffdiag^(1 / (2 * ndeg + 2)))
-    L <- nbasis.min - 1L + ceiling(ndiag^(1 / (2 * ndeg)))
+    if (is.null(Nis)) {
+      stop("Automatic theory basis selection requires subject time counts.")
+    }
+    if (is.null(p) || is.null(q)) {
+      stop("Automatic theory basis selection requires p and q.")
+    }
+
+    Nis <- as.numeric(Nis)
+    if (any(!is.finite(Nis)) || any(Nis < 1)) {
+      stop("Subject time counts must be positive and finite.")
+    }
+    mo <- Nis * (Nis - 1L) / 2
+    md <- Nis
+    Mo <- sum(mo)
+    Md <- sum(md)
+    n_o_eff <- if (Mo > 0) Mo^2 / sum(mo^2) else 0
+    n_d_eff <- if (Md > 0) Md^2 / sum(md^2) else 0
+
+    r_space <- .spatial_replication_factor(
+      p, q,
+      U_tilde = U_tilde,
+      V_tilde = V_tilde,
+      c_delta = c_delta
+    )
+    N_K_eff <- n_o_eff * r_space
+    N_G_eff <- n_d_eff * r_space
+    if (min(
+      basis_multiplier.K, basis_multiplier.G,
+      obs_per_basis.K, obs_per_basis.G
+    ) <= 0) {
+      stop("Basis multipliers and observation-per-basis caps must be positive.")
+    }
+
+    J <- ceiling(basis_multiplier.K * N_K_eff^(1 / (2 * smooth_order + 2)))
+    L <- ceiling(basis_multiplier.G * N_G_eff^(1 / (2 * smooth_order)))
+
+    J_cap <- floor(sqrt(noffdiag / obs_per_basis.K))
+    L_cap <- floor(ndiag / obs_per_basis.G)
   } else {
     # Dense designs can support a richer basis, while REML still controls
     # the effective degrees of freedom.
     J <- nbasis.min - 1L + ceiling(noffdiag^(1 / (2 * ndeg)))
     L <- nbasis.min - 1L + ceiling(ndiag^(1 / (2 * ndeg - 1)))
+
+    # Keep at least about four observations per tensor-product coefficient.
+    J_cap <- max(nbasis.min.K, floor(sqrt(noffdiag / 4)))
+    L_cap <- max(nbasis.min.G, floor(ndiag / 4))
   }
 
-  # Keep at least about four observations per tensor-product coefficient.
-  J_cap <- max(nbasis.min, floor(sqrt(noffdiag / 4)))
-  L_cap <- max(nbasis.min, floor(ndiag / 4))
-
   c(
-    K = min(as.integer(J), as.integer(J_cap), as.integer(nloc)),
-    G = min(as.integer(L), as.integer(L_cap), as.integer(nloc))
+    K = max(
+      nbasis.min.K,
+      min(as.integer(J), as.integer(J_cap), as.integer(nloc))
+    ),
+    G = max(
+      nbasis.min.G,
+      min(as.integer(L), as.integer(L_cap), as.integer(nloc))
+    )
   )
 }
 
@@ -517,6 +602,71 @@ choose.nbasis <- function(
   )
 }
 
+.fit_temporal_joint <- function(
+  scatter_data,
+  t_grid,
+  nbasis,
+  ndeg,
+  noise,
+  sig2.min
+) {
+  nt <- length(t_grid)
+  covEstFunc <- if (nrow(scatter_data) > 1e5) mgcv::bam else mgcv::gam
+  scatter_data <- data.table::copy(scatter_data)
+  scatter_data[, diag_ind := as.integer(is_diag)]
+
+  formula_K <- stats::as.formula(sprintf(
+    paste0(
+      "Kval ~ te(t1, t2, k = c(%d, %d), ",
+      "m = c(%d, %d), bs = c('ps', 'ps'))%s"
+    ),
+    nbasis[["K"]], nbasis[["K"]], ndeg, ndeg,
+    if (noise) " + diag_ind" else ""
+  ))
+
+  fit_K <- covEstFunc(
+    formula_K,
+    data = scatter_data,
+    weights = scatter_data$w,
+    method = "REML"
+  )
+
+  grid <- data.table::data.table(
+    t1 = rep(t_grid, each = nt),
+    t2 = rep(t_grid, times = nt),
+    diag_ind = 0L
+  )
+  K_hat <- matrix(predict(fit_K, newdata = grid), nt, nt)
+  K_hat <- sym(K_hat)
+
+  if (!noise) {
+    return(list(
+      K = K_hat,
+      G = NULL,
+      sig2 = 0,
+      fit = list(K = fit_K, G = NULL),
+      nbasis = nbasis,
+      temporal_method = "joint"
+    ))
+  }
+
+  sig2.min <- if (is.null(sig2.min)) 0 else as.numeric(sig2.min)[1L]
+  delta_hat <- unname(stats::coef(fit_K)[["diag_ind"]])
+  if (!is.finite(delta_hat)) {
+    stop("Joint temporal fit did not produce a finite diagonal noise coefficient.")
+  }
+  sig2_hat <- max(sig2.min, delta_hat)
+
+  list(
+    K = K_hat,
+    G = diag(K_hat) + sig2_hat,
+    sig2 = sig2_hat,
+    fit = list(K = fit_K, G = NULL),
+    nbasis = nbasis,
+    temporal_method = "joint"
+  )
+}
+
 estimate_K <- function(
   data,
   W1, W2,
@@ -524,6 +674,7 @@ estimate_K <- function(
   nbasis = "theory",
   ndeg = 3,
   sig2.min = NULL,
+  temporal_method = c("two_step", "joint"),
   ...
 ) {
   UseMethod("estimate_K")
@@ -536,12 +687,16 @@ estimate_K.matfdata.grid <- function(
   nbasis = "theory",
   ndeg = 3,
   sig2.min = NULL,
+  temporal_method = c("two_step", "joint"),
   use_subject_weights = FALSE,
+  U_tilde = NULL,
+  V_tilde = NULL,
   ...
 ) {
   if (!is(data, "matfdata.grid")) {
     stop("data needs to be a matfdata.grid")
   }
+  temporal_method <- match.arg(temporal_method)
 
   n <- dim(data$X)[1]
   nt <- length(data$t_grid)
@@ -555,7 +710,12 @@ estimate_K.matfdata.grid <- function(
     ndeg = ndeg,
     ndiag = ndiag,
     noffdiag = noffdiag,
-    nloc = nt
+    nloc = nt,
+    Nis = rep(nt, n),
+    p = p,
+    q = q,
+    U_tilde = U_tilde,
+    V_tilde = V_tilde
   )
 
   scatter <- foreach::foreach(i = seq_len(n), .combine = rbind) %do% {
@@ -575,7 +735,18 @@ estimate_K.matfdata.grid <- function(
     )
   }
 
-  .fit_temporal_two_step(
+  if (temporal_method == "joint") {
+    return(.fit_temporal_joint(
+      scatter_data = scatter,
+      t_grid = data$t_grid,
+      nbasis = nb,
+      ndeg = ndeg,
+      noise = noise,
+      sig2.min = sig2.min
+    ))
+  }
+
+  out <- .fit_temporal_two_step(
     offdiag_data = scatter[!scatter$is_diag, ],
     diag_data = data.table::data.table(
       t = scatter$t1[scatter$is_diag],
@@ -588,6 +759,8 @@ estimate_K.matfdata.grid <- function(
     noise = noise,
     sig2.min = sig2.min
   )
+  out$temporal_method <- "two_step"
+  out
 }
 
 estimate_K.matfdata.irreg <- function(
@@ -595,10 +768,14 @@ estimate_K.matfdata.irreg <- function(
   noise = FALSE,
   nbasis = "theory", ndeg = 3,
   sig2.min = NULL,
+  temporal_method = c("two_step", "joint"),
   use_subject_weights = FALSE,
+  U_tilde = NULL,
+  V_tilde = NULL,
   ...
 ) {
   stopifnot(inherits(data, "matfdata.irreg"))
+  temporal_method <- match.arg(temporal_method)
   n  <- length(data$X_list)
   nt <- length(data$t_grid)
   P  <- prod(data$vdim)
@@ -611,7 +788,12 @@ estimate_K.matfdata.irreg <- function(
     ndeg = ndeg,
     ndiag = ndiag,
     noffdiag = noffdiag,
-    nloc = length(unique(unlist(data$t_idx_list)))
+    nloc = length(unique(unlist(data$t_idx_list))),
+    Nis = Nis,
+    p = data$vdim[1],
+    q = data$vdim[2],
+    U_tilde = U_tilde,
+    V_tilde = V_tilde
   )
 
   # Build separate off-diagonal and diagonal pseudo-observations.
@@ -638,7 +820,18 @@ estimate_K.matfdata.irreg <- function(
     dt
   }
 
-  .fit_temporal_two_step(
+  if (temporal_method == "joint") {
+    return(.fit_temporal_joint(
+      scatter_data = K_wk_all,
+      t_grid = data$t_grid,
+      nbasis = nb,
+      ndeg = ndeg,
+      noise = noise,
+      sig2.min = sig2.min
+    ))
+  }
+
+  out <- .fit_temporal_two_step(
     offdiag_data = K_wk_all[!K_wk_all$is_diag, ],
     diag_data = data.table::data.table(
       t = K_wk_all$t1[K_wk_all$is_diag],
@@ -651,6 +844,8 @@ estimate_K.matfdata.irreg <- function(
     noise = noise,
     sig2.min = sig2.min
   )
+  out$temporal_method <- "two_step"
+  out
 }
 
 estimate_U <- function(data, W2, W3, ...) {
@@ -749,9 +944,11 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   data,
   noise = FALSE,
   nbasis = "theory",
-  ndeg = 3
+  ndeg = 3,
+  temporal_method = c("two_step", "joint")
 ) {
   stopifnot(inherits(data, "matfdata.irreg"))
+  temporal_method <- match.arg(temporal_method)
 
   p <- data$vdim[1]
   q <- data$vdim[2]
@@ -761,7 +958,13 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   W1 <- diag(1, p); W2 <- diag(1, q)
   W3 <- lapply(Nis, \(Ni) diag(1, Ni))
 
-  Ksig2 <- estimate_K(data, W1, W2, noise = noise, nbasis = nbasis, ndeg = ndeg)
+  Ksig2 <- estimate_K(
+    data, W1, W2,
+    noise = noise,
+    nbasis = nbasis,
+    ndeg = ndeg,
+    temporal_method = temporal_method
+  )
   K <- psd_project(sym(Ksig2$K))
   sig2 <- Ksig2$sig2
 
@@ -784,9 +987,11 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   noise = FALSE,
   nbasis = "theory",
   ndeg = 3,
-  opwIter = 3
+  opwIter = 3,
+  temporal_method = c("two_step", "joint")
 ) {
   stopifnot(inherits(data, "matfdata.irreg"), is(pilot, "matfcov"))
+  temporal_method <- match.arg(temporal_method)
   wScheme <- match_weight_scheme(
     wScheme,
     setdiff(WEIGHT_SCHEMES, "identity")
@@ -815,7 +1020,10 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     data, W1K, W2K,
     noise = noise,
     nbasis = nbasis,
-    ndeg = ndeg
+    ndeg = ndeg,
+    temporal_method = temporal_method,
+    U_tilde = pilot$U,
+    V_tilde = pilot$V
   )
   beta1K <- tr(pilot$U, W1K) / p
   beta2K <- tr(pilot$V, W2K) / q
@@ -864,16 +1072,19 @@ fit_matfcov <- function(
   noise = FALSE,
   nbasis = "theory",
   ndeg = 3,
-  opwIter = 3
+  opwIter = 3,
+  temporal_method = c("two_step", "joint")
 ) {
   wScheme <- match_weight_scheme(wScheme)
+  temporal_method <- match.arg(temporal_method)
   stopifnot(inherits(data, "matfdata.irreg"))
 
   pilot_fit <- .fit_matfcov_identity(
     data,
     noise = noise,
     nbasis = nbasis,
-    ndeg = ndeg
+    ndeg = ndeg,
+    temporal_method = temporal_method
   )
   if (wScheme == "identity") return(pilot_fit)
 
@@ -884,7 +1095,8 @@ fit_matfcov <- function(
     noise = noise,
     nbasis = nbasis,
     ndeg = ndeg,
-    opwIter = opwIter
+    opwIter = opwIter,
+    temporal_method = temporal_method
   )
 }
 

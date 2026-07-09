@@ -7,9 +7,11 @@ if command -v module >/dev/null 2>&1; then
 fi
 
 # Usage:
-#   experiment/run_simu_simple.sh [max_seed] [min_seed] [max_parallel]
+#   experiment/run_simu_simple.sh [max_seed] [min_seed] [max_parallel] [options]
 #   experiment/run_simu_simple.sh 100 1 100
 #   experiment/run_simu_simple.sh 200 101 100 --dry-run
+#   experiment/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
+#   experiment/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
 #
 # Defaults produce the configured experiment grid for seeds 1-50, split into
 # resource classes and throttled to at most 100 concurrently running tasks per
@@ -17,6 +19,15 @@ fi
 #
 # Fir is sensitive to BLAS-related OOMs; the worker pins FlexiBLAS to IMKL and
 # caps numerical backends to the CPUs requested by each resource class.
+#
+# Eigensystem choices:
+#   legacy          current runner setting: smooth spatial Fourier basis,
+#                   low-rank smooth temporal covariance.
+#   complex-lowrank random spatial eigenvectors and low-rank smooth temporal
+#                   covariance, matching the generator's original defaults.
+#   smooth-highrank smooth spatial Fourier basis with faster spatial
+#                   eigendecay and a higher-rank temporal covariance.
+#   both            run complex-lowrank and smooth-highrank for each setting.
 
 if [[ "${1:-}" == "--worker" ]]; then
   ROOT_DIR="${3:?project root was not passed to the Slurm worker}"
@@ -49,12 +60,15 @@ run_array_task() {
   fi
 
   local config_id seed n p sigma distribution dependence dep_param
+  local eigensystem eigvec_set eigval_set rank_time
   IFS=$'\t' read -r \
-    config_id seed n p sigma distribution dependence dep_param <<< "${row}"
+    config_id seed n p sigma distribution dependence dep_param \
+    eigensystem eigvec_set eigval_set rank_time <<< "${row}"
 
   echo "Running config=${config_id}, seed=${seed}"
   echo "n=${n}, p=q=${p}, sigma=${sigma}, distribution=${distribution}"
   echo "dependence=${dependence}, dependence_param=${dep_param}"
+  echo "eigensystem=${eigensystem}, eigvec_set=${eigvec_set}, eigval_set=${eigval_set}, rank_time=${rank_time}"
 
   cd "${ROOT_DIR}"
 
@@ -78,9 +92,11 @@ run_array_task() {
     --noise_lvl "${sigma}"
     --rank_row 0
     --rank_col 0
-    --rank_time 5
+    --rank_time "${rank_time}"
     --nbasis 0
-    --eigset 2
+    --eigset "${eigvec_set}"
+    --eigvalset "${eigval_set}"
+    --eigensystem "${eigensystem}"
     --scores_distr "${distribution}"
     --score_dependence "${dependence}"
     --dependence_param "${dep_param}"
@@ -105,7 +121,35 @@ fi
 max_seed="${1:-50}"
 min_seed="${2:-1}"
 max_parallel="${3:-100}"
-dry_run="${4:-}"
+dry_run=0
+eigensystem_arg="${MATFPCA_EIGENSYSTEM:-legacy}"
+
+shift_count=0
+if (($# >= 1)); then shift_count=1; fi
+if (($# >= 2)); then shift_count=2; fi
+if (($# >= 3)); then shift_count=3; fi
+shift "${shift_count}"
+
+while (($#)); do
+  case "$1" in
+    --dry-run)
+      dry_run=1
+      shift
+      ;;
+    --eigensystem)
+      eigensystem_arg="${2:?--eigensystem requires a value}"
+      shift 2
+      ;;
+    --eigensystem=*)
+      eigensystem_arg="${1#*=}"
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
 if ! [[ "${max_seed}" =~ ^[1-9][0-9]*$ ]]; then
   echo "max_seed must be a positive integer" >&2
@@ -123,6 +167,57 @@ if (( min_seed > max_seed )); then
   echo "min_seed must be less than or equal to max_seed" >&2
   exit 2
 fi
+
+eigensystems_for_run() {
+  case "$1" in
+    legacy)
+      printf "legacy\n"
+      ;;
+    complex-lowrank)
+      printf "complex-lowrank\n"
+      ;;
+    smooth-highrank)
+      printf "smooth-highrank\n"
+      ;;
+    both)
+      printf "complex-lowrank\nsmooth-highrank\n"
+      ;;
+    *)
+      echo "Unknown eigensystem: $1" >&2
+      echo "Valid choices are: legacy, complex-lowrank, smooth-highrank, both" >&2
+      exit 2
+      ;;
+  esac
+}
+
+eigvec_set_for_eigensystem() {
+  case "$1" in
+    legacy) echo 2 ;;
+    complex-lowrank) echo 1 ;;
+    smooth-highrank) echo 2 ;;
+    *) echo "unknown eigensystem: $1" >&2; exit 2 ;;
+  esac
+}
+
+eigval_set_for_eigensystem() {
+  case "$1" in
+    legacy) echo 1 ;;
+    complex-lowrank) echo 1 ;;
+    smooth-highrank) echo 2 ;;
+    *) echo "unknown eigensystem: $1" >&2; exit 2 ;;
+  esac
+}
+
+rank_time_for_eigensystem() {
+  case "$1" in
+    legacy) echo 5 ;;
+    complex-lowrank) echo 5 ;;
+    smooth-highrank) echo 9 ;;
+    *) echo "unknown eigensystem: $1" >&2; exit 2 ;;
+  esac
+}
+
+mapfile -t ACTIVE_EIGENSYSTEMS < <(eigensystems_for_run "${eigensystem_arg}")
 
 seed_count=$((max_seed - min_seed + 1))
 
@@ -185,7 +280,7 @@ init_manifest() {
   local manifest="${MANIFEST_DIR}/simu_simple_${timestamp}_s${min_seed}-${max_seed}_${class}.tsv"
   manifest_by_class["${class}"]="${manifest}"
   class_task_count["${class}"]=0
-  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\n" \
+  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\teigensystem\teigvec_set\teigval_set\trank_time\n" \
     > "${manifest}"
 }
 
@@ -200,26 +295,34 @@ add_config() {
   local distribution="$4"
   local dependence="$5"
   local dep_param="$6"
-  local key="${n}|${p}|${sigma}|${distribution}|${dependence}|${dep_param}"
+  local eigensystem eigvec_set eigval_set rank_time key
 
-  if [[ -n "${seen_configs[${key}]:-}" ]]; then
-    return
-  fi
-  seen_configs["${key}"]=1
-  config_count=$((config_count + 1))
+  for eigensystem in "${ACTIVE_EIGENSYSTEMS[@]}"; do
+    eigvec_set="$(eigvec_set_for_eigensystem "${eigensystem}")"
+    eigval_set="$(eigval_set_for_eigensystem "${eigensystem}")"
+    rank_time="$(rank_time_for_eigensystem "${eigensystem}")"
+    key="${n}|${p}|${sigma}|${distribution}|${dependence}|${dep_param}|${eigensystem}"
 
-  local class manifest
-  class="$(class_for_p "${p}")"
-  manifest="${manifest_by_class[${class}]}"
+    if [[ -n "${seen_configs[${key}]:-}" ]]; then
+      continue
+    fi
+    seen_configs["${key}"]=1
+    config_count=$((config_count + 1))
 
-  local seed
-  for ((seed = min_seed; seed <= max_seed; seed++)); do
-    printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-      "${config_count}" "${seed}" \
-      "${n}" "${p}" "${sigma}" "${distribution}" \
-      "${dependence}" "${dep_param}" >> "${manifest}"
+    local class manifest
+    class="$(class_for_p "${p}")"
+    manifest="${manifest_by_class[${class}]}"
+
+    local seed
+    for ((seed = min_seed; seed <= max_seed; seed++)); do
+      printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "${config_count}" "${seed}" \
+        "${n}" "${p}" "${sigma}" "${distribution}" \
+        "${dependence}" "${dep_param}" \
+        "${eigensystem}" "${eigvec_set}" "${eigval_set}" "${rank_time}" >> "${manifest}"
+    done
+    class_task_count["${class}"]=$((class_task_count["${class}"] + seed_count))
   done
-  class_task_count["${class}"]=$((class_task_count["${class}"] + seed_count))
 }
 
 # Baseline: n=50, p=q=30, sigma=0.5, Gaussian independent scores.
@@ -240,7 +343,7 @@ for p in "${DIMENSIONS[@]}"; do
 done
 
 # Noise series.
-for sigma in 0 0.5 1; do
+for sigma in 0.1 0.5 1; do
   add_config 50 30 "${sigma}" normal independent 0
 done
 
@@ -257,6 +360,8 @@ done
 
 task_count=$((config_count * seed_count))
 echo "Configurations: ${config_count}"
+echo "Eigensystem argument: ${eigensystem_arg}"
+echo "Eigensystems: ${ACTIVE_EIGENSYSTEMS[*]}"
 echo "Seed range: ${min_seed}-${max_seed} (${seed_count} seeds per configuration)"
 echo "Array tasks: ${task_count}"
 for class in "${RESOURCE_CLASSES[@]}"; do
@@ -264,7 +369,7 @@ for class in "${RESOURCE_CLASSES[@]}"; do
   echo "Array tasks (${class}): ${class_task_count[${class}]}"
 done
 
-if [[ "${dry_run}" == "--dry-run" ]]; then
+if (( dry_run )); then
   echo "Dry run requested; no jobs submitted."
   for class in "${RESOURCE_CLASSES[@]}"; do
     rm -f "${manifest_by_class[${class}]}"
