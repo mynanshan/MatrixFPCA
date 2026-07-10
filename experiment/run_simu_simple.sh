@@ -278,6 +278,20 @@ mem_for_class() {
   esac
 }
 
+# Cross-fitted refined weights repeat the pilot/weight calculation once per
+# fold.  In particular, the p=q=150 and 200 settings no longer fit reliably in
+# the one-hour limit used by the pre-cross-fitting experiment.  Keep the limits
+# class-specific so smaller jobs do not request an unnecessarily long walltime.
+# Each default can be overridden without editing this runner.
+time_for_class() {
+  case "$1" in
+    small) echo "${MATFPCA_TIME_SMALL:-2:00:00}" ;;
+    medium) echo "${MATFPCA_TIME_MEDIUM:-4:00:00}" ;;
+    large) echo "${MATFPCA_TIME_LARGE:-8:00:00}" ;;
+    *) echo "unknown resource class: $1" >&2; exit 2 ;;
+  esac
+}
+
 parallel_cap_for_class() {
   case "$1" in
     small) echo 100 ;;
@@ -397,6 +411,7 @@ echo "Array tasks: ${task_count}"
 for class in "${RESOURCE_CLASSES[@]}"; do
   echo "Manifest (${class}): ${manifest_by_class[${class}]}"
   echo "Array tasks (${class}): ${class_task_count[${class}]}"
+  echo "Time limit (${class}): $(time_for_class "${class}")"
 done
 
 if (( dry_run )); then
@@ -417,12 +432,13 @@ for class in "${RESOURCE_CLASSES[@]}"; do
   class_parallel="$(min_int "${max_parallel}" "$(parallel_cap_for_class "${class}")")"
   class_cpus="$(cpus_for_class "${class}")"
   class_mem="$(mem_for_class "${class}")"
+  class_time="$(time_for_class "${class}")"
   manifest="${manifest_by_class[${class}]}"
 
   job_id="$(sbatch --parsable \
     --job-name="matfpca-simple-${class}" \
     --output="${LOG_DIR}/simu_simple_${class}_%A_%a.out" \
-    --time="1:00:00" \
+    --time="${class_time}" \
     --nodes=1 \
     --ntasks=1 \
     --cpus-per-task="${class_cpus}" \
@@ -431,7 +447,7 @@ for class in "${RESOURCE_CLASSES[@]}"; do
     "$0" --worker "${manifest}" "${ROOT_DIR}")"
 
   submitted_jobs+=("${job_id}")
-  echo "Submitted ${class} Slurm array ${job_id} (${class_tasks} tasks, ${class_cpus} CPUs, ${class_mem})."
+  echo "Submitted ${class} Slurm array ${job_id} (${class_tasks} tasks, ${class_cpus} CPUs, ${class_mem}, ${class_time})."
 done
 
 echo "After completion, audit actual use with:"
