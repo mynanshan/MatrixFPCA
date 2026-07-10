@@ -12,6 +12,7 @@ fi
 #   experiment/run_simu_simple.sh 200 101 100 --dry-run
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
+#   experiment/run_simu_simple.sh 50 1 100 --nbasis 25
 #
 # Defaults produce the configured experiment grid for seeds 1-50, split into
 # resource classes and throttled to at most 100 concurrently running tasks per
@@ -28,6 +29,10 @@ fi
 #   smooth-highrank smooth spatial Fourier basis with faster spatial
 #                   eigendecay and a higher-rank temporal covariance.
 #   both            run complex-lowrank and smooth-highrank for each setting.
+#
+# By default the runner uses a fixed marginal temporal basis dimension of 25.
+# Set MATFPCA_NBASIS=0 or pass --nbasis 0 to use the theory-guided automatic
+# rule from fit_matfcov().
 
 if [[ "${1:-}" == "--worker" ]]; then
   ROOT_DIR="${3:?project root was not passed to the Slurm worker}"
@@ -59,15 +64,16 @@ run_array_task() {
     exit 1
   fi
 
-  local config_id seed n p sigma distribution dependence dep_param
+  local config_id seed n p sigma distribution dependence dep_param nbasis
   local eigensystem eigvec_set eigval_set rank_time
   IFS=$'\t' read -r \
     config_id seed n p sigma distribution dependence dep_param \
-    eigensystem eigvec_set eigval_set rank_time <<< "${row}"
+    nbasis eigensystem eigvec_set eigval_set rank_time <<< "${row}"
 
   echo "Running config=${config_id}, seed=${seed}"
   echo "n=${n}, p=q=${p}, sigma=${sigma}, distribution=${distribution}"
   echo "dependence=${dependence}, dependence_param=${dep_param}"
+  echo "nbasis=${nbasis}"
   echo "eigensystem=${eigensystem}, eigvec_set=${eigvec_set}, eigval_set=${eigval_set}, rank_time=${rank_time}"
 
   cd "${ROOT_DIR}"
@@ -93,7 +99,7 @@ run_array_task() {
     --rank_row 0
     --rank_col 0
     --rank_time "${rank_time}"
-    --nbasis 0
+    --nbasis "${nbasis}"
     --eigset "${eigvec_set}"
     --eigvalset "${eigval_set}"
     --eigensystem "${eigensystem}"
@@ -123,6 +129,7 @@ min_seed="${2:-1}"
 max_parallel="${3:-100}"
 dry_run=0
 eigensystem_arg="${MATFPCA_EIGENSYSTEM:-legacy}"
+nbasis_arg="${MATFPCA_NBASIS:-25}"
 
 shift_count=0
 if (($# >= 1)); then shift_count=1; fi
@@ -142,6 +149,14 @@ while (($#)); do
       ;;
     --eigensystem=*)
       eigensystem_arg="${1#*=}"
+      shift
+      ;;
+    --nbasis)
+      nbasis_arg="${2:?--nbasis requires a value}"
+      shift 2
+      ;;
+    --nbasis=*)
+      nbasis_arg="${1#*=}"
       shift
       ;;
     *)
@@ -165,6 +180,10 @@ if ! [[ "${max_parallel}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if (( min_seed > max_seed )); then
   echo "min_seed must be less than or equal to max_seed" >&2
+  exit 2
+fi
+if ! [[ "${nbasis_arg}" =~ ^[0-9]+$ ]]; then
+  echo "nbasis must be a nonnegative integer" >&2
   exit 2
 fi
 
@@ -280,7 +299,7 @@ init_manifest() {
   local manifest="${MANIFEST_DIR}/simu_simple_${timestamp}_s${min_seed}-${max_seed}_${class}.tsv"
   manifest_by_class["${class}"]="${manifest}"
   class_task_count["${class}"]=0
-  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\teigensystem\teigvec_set\teigval_set\trank_time\n" \
+  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\tnbasis\teigensystem\teigvec_set\teigval_set\trank_time\n" \
     > "${manifest}"
 }
 
@@ -301,7 +320,7 @@ add_config() {
     eigvec_set="$(eigvec_set_for_eigensystem "${eigensystem}")"
     eigval_set="$(eigval_set_for_eigensystem "${eigensystem}")"
     rank_time="$(rank_time_for_eigensystem "${eigensystem}")"
-    key="${n}|${p}|${sigma}|${distribution}|${dependence}|${dep_param}|${eigensystem}"
+    key="${n}|${p}|${sigma}|${distribution}|${dependence}|${dep_param}|${nbasis_arg}|${eigensystem}"
 
     if [[ -n "${seen_configs[${key}]:-}" ]]; then
       continue
@@ -315,10 +334,11 @@ add_config() {
 
     local seed
     for ((seed = min_seed; seed <= max_seed; seed++)); do
-      printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+      printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "${config_count}" "${seed}" \
         "${n}" "${p}" "${sigma}" "${distribution}" \
         "${dependence}" "${dep_param}" \
+        "${nbasis_arg}" \
         "${eigensystem}" "${eigvec_set}" "${eigval_set}" "${rank_time}" >> "${manifest}"
     done
     class_task_count["${class}"]=$((class_task_count["${class}"] + seed_count))
@@ -362,6 +382,7 @@ task_count=$((config_count * seed_count))
 echo "Configurations: ${config_count}"
 echo "Eigensystem argument: ${eigensystem_arg}"
 echo "Eigensystems: ${ACTIVE_EIGENSYSTEMS[*]}"
+echo "Temporal marginal basis dimension: ${nbasis_arg} (0 means automatic theory rule)"
 echo "Seed range: ${min_seed}-${max_seed} (${seed_count} seeds per configuration)"
 echo "Array tasks: ${task_count}"
 for class in "${RESOURCE_CLASSES[@]}"; do

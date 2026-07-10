@@ -76,6 +76,14 @@ rescale_trace <- function(W, target_tr) {
   W * (target_tr / s)
 }
 
+trace_normalize <- function(A, target_trace) {
+  A_trace <- tr(A)
+  if (!is.finite(A_trace) || abs(A_trace) < 10 * .Machine$double.eps) {
+    return(diag(target_trace / nrow(A), nrow(A)))
+  }
+  A * (target_trace / A_trace)
+}
+
 # Cov Estimation ----------------------------------------------------------
 
 ###### Formulate row covariances ######
@@ -209,6 +217,29 @@ compute_W.shared <- function(U, V, LK, sig2, wScheme, eps = 1e-10) {
   sum(W * W)
 }
 
+.gaussian_block_weight <- function(
+  S,
+  A,
+  B,
+  C,
+  ridge = 1e-8,
+  tol = 1e-10
+) {
+  # Singular-safe form of S (A S^2 + B S + C I)^(-1). The inverse-covariance
+  # rewrite is equivalent only when S is well-conditioned and positive definite.
+  S <- sym(S)
+  ee <- eigen(S, symmetric = TRUE)
+  values <- pmax(ee$values, 0)
+  if (length(values) && max(values) > 0) {
+    values[values <= tol * max(values)] <- 0
+  }
+  denom <- A * values^2 + B * values + C
+  ridge_scale <- max(abs(denom), 1)
+  denom <- denom + ridge * ridge_scale
+  weight_values <- ifelse(denom > 0, values / denom, 0)
+  sym(ee$vectors %*% (weight_values * t(ee$vectors)))
+}
+
 compute_W.gaussian_refined <- function(
   U, V, LK, sig2,
   W1_init, W2_init, W3_init,
@@ -235,10 +266,6 @@ compute_W.gaussian_refined <- function(
   c1 <- sig2^2 * (p^2 + p)
   c2 <- sig2^2 * (q^2 + q)
   c3 <- sig2^2 * sum(Nis^2 + Nis)
-
-  Uinv <- ginv_spd(U, ridge = ridge)
-  Vinv <- ginv_spd(V, ridge = ridge)
-  LKinv <- lapply(LK, \(Ki) ginv_spd(Ki, ridge = ridge))
 
   # initialize per-target weights from the shared init
   W2U <- W2_init
@@ -267,23 +294,25 @@ compute_W.gaussian_refined <- function(
     zeta3bar <- mean(zeta3i)
     eta3bar <- mean(eta3i)
 
-    W2U <- beta3bar * inv_spd(
-      a1 * gamma3bar * V +
-        b1 * zeta3bar * diag(1, q) +
-        c1 * eta3bar * Vinv,
+    W2U <- beta3bar * .gaussian_block_weight(
+      V,
+      A = a1 * gamma3bar,
+      B = b1 * zeta3bar,
+      C = c1 * eta3bar,
       ridge = ridge
     )
 
     W3U <- mapply(
-      function(Ki, Ki_inv) {
-        beta2 * inv_spd(
-          a1 * gamma2 * Ki +
-            b1 * zeta2 * diag(1, nrow(Ki)) +
-            c1 * eta2 * Ki_inv,
+      function(Ki) {
+        beta2 * .gaussian_block_weight(
+          Ki,
+          A = a1 * gamma2,
+          B = b1 * zeta2,
+          C = c1 * eta2,
           ridge = ridge
         )
       },
-      LK, LKinv,
+      LK,
       SIMPLIFY = FALSE
     )
 
@@ -313,22 +342,25 @@ compute_W.gaussian_refined <- function(
     zeta3bar <- mean(zeta3i)
     eta3bar <- mean(eta3i)
 
-    W1V <- beta3bar * inv_spd(
-      a2 * gamma3bar * U +
-        b2 * zeta3bar * diag(1, p) +
-        c2 * eta3bar * Uinv,
+    W1V <- beta3bar * .gaussian_block_weight(
+      U,
+      A = a2 * gamma3bar,
+      B = b2 * zeta3bar,
+      C = c2 * eta3bar,
       ridge = ridge
     )
 
     W3V <- mapply(
-      function(Ki, Ki_inv) {
-        beta1 * inv_spd(a2 * gamma1 * Ki +
-            b2 * zeta1 * diag(1, nrow(Ki)) +
-            c2 * eta1 * Ki_inv,
+      function(Ki) {
+        beta1 * .gaussian_block_weight(
+          Ki,
+          A = a2 * gamma1,
+          B = b2 * zeta1,
+          C = c2 * eta1,
           ridge = ridge
         )
       },
-      LK, LKinv,
+      LK,
       SIMPLIFY = FALSE
     )
 
@@ -353,10 +385,22 @@ compute_W.gaussian_refined <- function(
     zeta1  <- .zeta_mode(U, W1K)
     eta1   <- .eta_mode(W1K)
 
-    W1K <- beta2 * inv_spd(a3 * gamma2 * U + b3 * zeta2 * diag(1, p) + c3 * eta2 * Uinv, ridge = ridge)
+    W1K <- beta2 * .gaussian_block_weight(
+      U,
+      A = a3 * gamma2,
+      B = b3 * zeta2,
+      C = c3 * eta2,
+      ridge = ridge
+    )
     if (rescale) W1K <- rescale_trace(W1K, p)
 
-    W2K <- beta1 * inv_spd(a3 * gamma1 * V + b3 * zeta1 * diag(1, q) + c3 * eta1 * Vinv, ridge = ridge)
+    W2K <- beta1 * .gaussian_block_weight(
+      V,
+      A = a3 * gamma1,
+      B = b3 * zeta1,
+      C = c3 * eta1,
+      ridge = ridge
+    )
     if (rescale) W2K <- rescale_trace(W2K, q)
   }
 
@@ -969,20 +1013,31 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   sig2 <- Ksig2$sig2
 
   U_hat <- sym(estimate_U(data, W2, W3))
-  U <- normalize_psd_trace(U_hat - diag(sig2, p), p)
+  Gamma_U <- U_hat - diag(sig2, p)
+  U_unprojected <- trace_normalize(Gamma_U, p)
+  U <- normalize_psd_trace(Gamma_U, p)
   V_hat <- sym(estimate_V(data, W1, W3))
-  V <- normalize_psd_trace(V_hat - diag(sig2, q), q)
+  Gamma_V <- V_hat - diag(sig2, q)
+  V_unprojected <- trace_normalize(Gamma_V, q)
+  V <- normalize_psd_trace(Gamma_V, q)
 
   list(
     C = create_matrix_covfunc(U, V, K, t_grid, sig2),
     W = NULL,
-    temporal_fit = Ksig2
+    temporal_fit = Ksig2,
+    raw = list(
+      Gamma_U = Gamma_U,
+      Gamma_V = Gamma_V,
+      U_unprojected = U_unprojected,
+      V_unprojected = V_unprojected
+    )
   )
 }
 
 .fit_matfcov_from_pilot <- function(
   data,
   pilot,
+  pilot_raw = NULL,
   wScheme,
   noise = FALSE,
   nbasis = "theory",
@@ -1006,6 +1061,16 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     data$t_idx_list,
     \(tid) pilot$K[tid, tid, drop = FALSE]
   )
+  pilot_U_cal <- if (!is.null(pilot_raw$U_unprojected)) {
+    pilot_raw$U_unprojected
+  } else {
+    pilot$U
+  }
+  pilot_V_cal <- if (!is.null(pilot_raw$V_unprojected)) {
+    pilot_raw$V_unprojected
+  } else {
+    pilot$V
+  }
 
   W <- compute_W(
     pilot$U, pilot$V, LK_pilot, pilot$sig2,
@@ -1025,8 +1090,8 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     U_tilde = pilot$U,
     V_tilde = pilot$V
   )
-  beta1K <- tr(pilot$U, W1K) / p
-  beta2K <- tr(pilot$V, W2K) / q
+  beta1K <- tr(pilot_U_cal, W1K) / p
+  beta2K <- tr(pilot_V_cal, W2K) / q
   alpha1K <- tr(W1K) / p
   alpha2K <- tr(W2K) / q
   if (min(beta1K, beta2K, alpha1K, alpha2K) <= 0) {
@@ -1043,26 +1108,30 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   alpha2U <- tr(W2U) / q
   alpha3Ubar <- mean(vapply(W3U, tr, numeric(1))) / Nbar
   U_hat <- sym(estimate_U(data, W2U, W3U))
-  U <- normalize_psd_trace(
-    U_hat - diag(sig2 * alpha2U * alpha3Ubar, p),
-    p
-  )
+  Gamma_U <- U_hat - diag(sig2 * alpha2U * alpha3Ubar, p)
+  U_unprojected <- trace_normalize(Gamma_U, p)
+  U <- normalize_psd_trace(Gamma_U, p)
 
   W1V <- get_W(W, 1, "V")
   W3V <- get_W(W, 3, "V")
   alpha1V <- tr(W1V) / p
   alpha3Vbar <- mean(vapply(W3V, tr, numeric(1))) / Nbar
   V_hat <- sym(estimate_V(data, W1V, W3V))
-  V <- normalize_psd_trace(
-    V_hat - diag(sig2 * alpha1V * alpha3Vbar, q),
-    q
-  )
+  Gamma_V <- V_hat - diag(sig2 * alpha1V * alpha3Vbar, q)
+  V_unprojected <- trace_normalize(Gamma_V, q)
+  V <- normalize_psd_trace(Gamma_V, q)
 
   list(
     C = create_matrix_covfunc(U, V, K, t_grid, sig2),
     W = W,
     pilot = pilot,
-    temporal_fit = Ksig2
+    temporal_fit = Ksig2,
+    raw = list(
+      Gamma_U = Gamma_U,
+      Gamma_V = Gamma_V,
+      U_unprojected = U_unprojected,
+      V_unprojected = V_unprojected
+    )
   )
 }
 
@@ -1091,6 +1160,7 @@ fit_matfcov <- function(
   .fit_matfcov_from_pilot(
     data,
     pilot = pilot_fit$C,
+    pilot_raw = pilot_fit$raw,
     wScheme = wScheme,
     noise = noise,
     nbasis = nbasis,

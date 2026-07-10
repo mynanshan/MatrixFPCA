@@ -9,6 +9,7 @@ results_dir <- if (length(args) >= 1L) args[[1L]] else
 output_dir <- if (length(args) >= 2L) args[[2L]] else
   file.path("experiment", "summary")
 expected_repetitions <- if (length(args) >= 3L) as.integer(args[[3L]]) else NA_integer_
+requested_plot_nbasis <- if (length(args) >= 4L) args[[4L]] else NA_character_
 manifest_dirs <- c(
   file.path(results_dir, "manifests"),
   file.path("logs", "manifests")
@@ -54,10 +55,18 @@ if (!"rank_time" %in% names(res)) res[, rank_time := 5]
 if (!"eigensystem" %in% names(res)) res[, eigensystem := "legacy"]
 if (!"eigvec_set" %in% names(res)) res[, eigvec_set := 2]
 if (!"eigval_set" %in% names(res)) res[, eigval_set := 1]
+if (!"nbasis" %in% names(res)) res[, nbasis := "theory"]
+res[, nbasis := as.character(nbasis)]
+optional_metric_columns <- c(
+  "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV"
+)
+for (column in optional_metric_columns) {
+  if (!column %in% names(res)) res[, (column) := NA_real_]
+}
 
 required <- c(
   "seed", "weight", "n", "p", "q", "sig", "distr", "dependence",
-  "dependence_param", "s1", "s2", "nt", "rank_row", "rank_col",
+  "dependence_param", "s1", "s2", "nt", "nbasis", "rank_row", "rank_col",
   "rank_time", "eigensystem", "eigvec_set", "eigval_set",
   "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC"
 )
@@ -69,7 +78,8 @@ if (length(missing)) {
 numeric_columns <- c(
   "seed", "n", "p", "q", "sig", "dependence_param", "s1", "s2", "nt",
   "rank_row", "rank_col", "rank_time", "eigvec_set", "eigval_set",
-  "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC"
+  "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC",
+  optional_metric_columns
 )
 res[, (numeric_columns) := lapply(.SD, as.numeric), .SDcols = numeric_columns]
 # Read results created before the method was renamed without requiring a rerun.
@@ -114,17 +124,23 @@ read_expected_from_manifests <- function(manifest_dirs) {
   if (!"rank_time" %in% names(expected)) expected[, rank_time := 5]
   if (!"rank_row" %in% names(expected)) expected[, rank_row := p]
   if (!"rank_col" %in% names(expected)) expected[, rank_col := q]
+  if (!"nbasis" %in% names(expected)) expected[, nbasis := "theory"]
+  expected[, nbasis := as.character(nbasis)]
   expected[
     ,
     .(
       config_id, seed, n, p, q, sig, distr, dependence, dependence_param,
-      s1, s2, nt, rank_row, rank_col, rank_time, eigensystem,
+      s1, s2, nt, nbasis, rank_row, rank_col, rank_time, eigensystem,
       eigvec_set, eigval_set
     )
   ]
 }
 
-make_expected_configs <- function(repetitions) {
+make_expected_configs <- function(
+  repetitions,
+  default_nbasis,
+  default_eigensystems
+) {
   configs <- data.table(
     n = numeric(),
     p = numeric(),
@@ -136,6 +152,7 @@ make_expected_configs <- function(repetitions) {
     s1 = numeric(),
     s2 = numeric(),
     nt = numeric(),
+    nbasis = character(),
     rank_row = numeric(),
     rank_col = numeric(),
     rank_time = numeric(),
@@ -145,14 +162,20 @@ make_expected_configs <- function(repetitions) {
   )
 
   add_config <- function(n, p, sig, distr, dependence, dependence_param) {
-    candidate <- data.table(
-      n = n, p = p, q = p, sig = sig, distr = distr,
-      dependence = dependence, dependence_param = dependence_param,
-      s1 = 2, s2 = 4, nt = 51,
-      rank_row = p, rank_col = p, rank_time = 5,
-      eigensystem = "legacy", eigvec_set = 2, eigval_set = 1
-    )
-    configs <<- unique(rbind(configs, candidate, use.names = TRUE))
+    for (row in seq_len(nrow(default_eigensystems))) {
+      eig <- default_eigensystems[row]
+      candidate <- data.table(
+        n = n, p = p, q = p, sig = sig, distr = distr,
+        dependence = dependence, dependence_param = dependence_param,
+        s1 = 2, s2 = 4, nt = 51,
+        nbasis = default_nbasis,
+        rank_row = p, rank_col = p, rank_time = eig$rank_time,
+        eigensystem = eig$eigensystem,
+        eigvec_set = eig$eigvec_set,
+        eigval_set = eig$eigval_set
+      )
+      configs <<- unique(rbind(configs, candidate, use.names = TRUE))
+    }
   }
 
   for (n in c(25, 50, 100)) add_config(n, 30, 0.5, "normal", "independent", 0)
@@ -178,7 +201,7 @@ make_expected_configs <- function(repetitions) {
     ,
     .(
       config_id, seed, n, p, q, sig, distr, dependence, dependence_param,
-      s1, s2, nt, rank_row, rank_col, rank_time, eigensystem,
+      s1, s2, nt, nbasis, rank_row, rank_col, rank_time, eigensystem,
       eigvec_set, eigval_set
     )
   ]
@@ -186,10 +209,25 @@ make_expected_configs <- function(repetitions) {
 
 run_columns <- c(
   "seed", "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-  "s1", "s2", "nt", "rank_row", "rank_col", "rank_time", "eigensystem",
-  "eigvec_set", "eigval_set"
+  "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
+  "eigensystem", "eigvec_set", "eigval_set"
 )
 setting_columns_no_weight <- setdiff(run_columns, "seed")
+available_nbasis <- sort(unique(res$nbasis))
+default_expected_nbasis <- if ("25" %in% available_nbasis) "25" else
+  available_nbasis[[1L]]
+default_expected_eigensystems <- unique(res[
+  ,
+  .(eigensystem, eigvec_set, eigval_set, rank_time)
+])
+if (!nrow(default_expected_eigensystems)) {
+  default_expected_eigensystems <- data.table(
+    eigensystem = "legacy",
+    eigvec_set = 2,
+    eigval_set = 1,
+    rank_time = 5
+  )
+}
 
 expected_runs <- read_expected_from_manifests(manifest_dirs)
 if (is.null(expected_runs)) {
@@ -199,7 +237,11 @@ if (is.null(expected_runs)) {
   if (!is.finite(expected_repetitions) || expected_repetitions < 1L) {
     stop("Could not determine expected repetitions.")
   }
-  expected_runs <- make_expected_configs(expected_repetitions)
+  expected_runs <- make_expected_configs(
+    expected_repetitions,
+    default_nbasis = default_expected_nbasis,
+    default_eigensystems = default_expected_eigensystems
+  )
 } else {
   expected_repetitions <- max(expected_runs$seed, na.rm = TRUE)
 }
@@ -239,16 +281,26 @@ setorder(completion_by_setting, config_id)
 
 # Stored errors are logarithms; convert them back before averaging.
 metric_columns <- c("relsseU", "relsseV", "reliseK", "relsiseC")
-absolute_metric_columns <- c("sseU", "sseV", "iseK")
-for (column in c(metric_columns, absolute_metric_columns)) {
+diagnostic_metric_columns <- c("relsseGammaU", "relsseGammaV")
+absolute_metric_columns <- c("sseU", "sseV", "iseK", "sseGammaU", "sseGammaV")
+for (column in c(metric_columns, diagnostic_metric_columns, absolute_metric_columns)) {
   res[, paste0(column, "_raw") := exp(get(column))]
 }
 res[, sseU_pixel_raw := sseU_raw / p^2]
 res[, sseV_pixel_raw := sseV_raw / q^2]
 
+mean_metric <- function(x) {
+  if (all(is.na(x))) return(NA_real_)
+  mean(x, na.rm = TRUE)
+}
+sd_metric <- function(x) {
+  if (sum(!is.na(x)) < 2L) return(NA_real_)
+  sd(x, na.rm = TRUE)
+}
+
 setting_columns <- c(
   "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-  "s1", "s2", "nt", "rank_row", "rank_col", "rank_time",
+  "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
   "eigensystem", "eigvec_set", "eigval_set", "weight"
 )
 
@@ -256,20 +308,24 @@ summary_long <- res[
   ,
   .(
     n_rep = .N,
-    relsseU_mean = mean(relsseU_raw),
-    relsseU_sd = sd(relsseU_raw),
-    sseU_pixel_mean = mean(sseU_pixel_raw),
-    sseU_pixel_sd = sd(sseU_pixel_raw),
-    relsseV_mean = mean(relsseV_raw),
-    relsseV_sd = sd(relsseV_raw),
-    sseV_pixel_mean = mean(sseV_pixel_raw),
-    sseV_pixel_sd = sd(sseV_pixel_raw),
-    reliseK_mean = mean(reliseK_raw),
-    reliseK_sd = sd(reliseK_raw),
-    iseK_mean = mean(iseK_raw),
-    iseK_sd = sd(iseK_raw),
-    relsiseC_mean = mean(relsiseC_raw),
-    relsiseC_sd = sd(relsiseC_raw)
+    relsseU_mean = mean_metric(relsseU_raw),
+    relsseU_sd = sd_metric(relsseU_raw),
+    sseU_pixel_mean = mean_metric(sseU_pixel_raw),
+    sseU_pixel_sd = sd_metric(sseU_pixel_raw),
+    relsseV_mean = mean_metric(relsseV_raw),
+    relsseV_sd = sd_metric(relsseV_raw),
+    sseV_pixel_mean = mean_metric(sseV_pixel_raw),
+    sseV_pixel_sd = sd_metric(sseV_pixel_raw),
+    reliseK_mean = mean_metric(reliseK_raw),
+    reliseK_sd = sd_metric(reliseK_raw),
+    iseK_mean = mean_metric(iseK_raw),
+    iseK_sd = sd_metric(iseK_raw),
+    relsiseC_mean = mean_metric(relsiseC_raw),
+    relsiseC_sd = sd_metric(relsiseC_raw),
+    relsseGammaU_mean = mean_metric(relsseGammaU_raw),
+    relsseGammaU_sd = sd_metric(relsseGammaU_raw),
+    relsseGammaV_mean = mean_metric(relsseGammaV_raw),
+    relsseGammaV_sd = sd_metric(relsseGammaV_raw)
   ),
   by = setting_columns
 ]
@@ -281,14 +337,17 @@ setorder(
 summary_wide <- dcast(
   summary_long,
   n + p + q + sig + distr + dependence + dependence_param + s1 + s2 + nt +
-    rank_row + rank_col + rank_time + eigensystem + eigvec_set + eigval_set ~
+    nbasis + rank_row + rank_col + rank_time + eigensystem +
+    eigvec_set + eigval_set ~
     weight,
   value.var = c(
     "n_rep",
     "relsseU_mean", "relsseU_sd", "sseU_pixel_mean", "sseU_pixel_sd",
     "relsseV_mean", "relsseV_sd", "sseV_pixel_mean", "sseV_pixel_sd",
     "reliseK_mean", "reliseK_sd", "iseK_mean", "iseK_sd",
-    "relsiseC_mean", "relsiseC_sd"
+    "relsiseC_mean", "relsiseC_sd",
+    "relsseGammaU_mean", "relsseGammaU_sd",
+    "relsseGammaV_mean", "relsseGammaV_sd"
   )
 )
 
@@ -297,7 +356,7 @@ summary_wide <- dcast(
 paired <- dcast(
   res,
   seed + n + p + q + sig + distr + dependence + dependence_param +
-    s1 + s2 + nt + rank_row + rank_col + rank_time + eigensystem +
+    s1 + s2 + nt + nbasis + rank_row + rank_col + rank_time + eigensystem +
     eigvec_set + eigval_set ~ weight,
   value.var = paste0(metric_columns, "_raw")
 )
@@ -351,15 +410,33 @@ theme_paper <- theme_bw(base_size = 11) +
     panel.grid.minor = element_blank()
   )
 
+plot_nbasis <- requested_plot_nbasis
+if (is.na(plot_nbasis)) {
+  plot_nbasis <- if ("25" %in% available_nbasis) "25" else
+    if ("theory" %in% available_nbasis) "theory" else available_nbasis[[1L]]
+}
+if (!plot_nbasis %in% available_nbasis) {
+  warning(
+    "Requested nbasis = ", plot_nbasis, " is absent; using ",
+    available_nbasis[[1L]], "."
+  )
+  plot_nbasis <- available_nbasis[[1L]]
+}
+nbasis_title <- if (identical(plot_nbasis, "theory")) {
+  "theory-guided temporal basis"
+} else {
+  paste("temporal marginal basis =", plot_nbasis)
+}
+
 dimension_metric_data <- melt(
   summary_long,
   id.vars = c(setting_columns, "n_rep"),
   measure.vars = list(
     mean_error = c(
-      "sseU_pixel_mean", "sseV_pixel_mean", "reliseK_mean", "relsiseC_mean"
+      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
     ),
     sd_error = c(
-      "sseU_pixel_sd", "sseV_pixel_sd", "reliseK_sd", "relsiseC_sd"
+      "relsseU_sd", "relsseV_sd", "reliseK_sd", "relsiseC_sd"
     )
   ),
   variable.name = "metric_index"
@@ -370,7 +447,8 @@ dimension_metric_data[
     metric_index,
     levels = 1:4,
     labels = c(
-      "U pixel MSE", "V pixel MSE", "K relative ISE", "Full covariance"
+      "U relative Frobenius", "V relative Frobenius",
+      "K relative ISE", "Full covariance"
     )
   )
 ]
@@ -399,7 +477,8 @@ dimension_metric_data[
 ]
 
 dimension_data <- dimension_metric_data[
-  n == 50 & sig == 0.5 & dependence == "independent" &
+  nbasis == plot_nbasis &
+    n == 50 & sig == 0.5 & dependence == "independent" &
     p %in% dimension_grid
 ]
 dimension_plot <- ggplot(
@@ -422,15 +501,17 @@ dimension_plot <- ggplot(
     title = paste(
       "Error vs. spatial dimension",
       "Fixed: n = 50, sigma = 0.5, independent scores",
+      nbasis_title,
       sep = "\n"
     ),
-    x = "Spatial dimension (p = q)", y = "Mean error",
+    x = "Spatial dimension (p = q)", y = "Mean relative error",
     color = "Weighting", shape = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
 dependent_dimension_data <- dimension_metric_data[
-  n == 50 & sig == 0.5 & distr == "normal" &
+  nbasis == plot_nbasis &
+    n == 50 & sig == 0.5 & distr == "normal" &
     dependence != "independent" & p %in% dimension_grid &
     weight == "identity"
 ]
@@ -454,15 +535,17 @@ dependent_dimension_plot <- ggplot(
     title = paste(
       "Error vs. spatial dimension",
       "Fixed: n = 50, sigma = 0.5, Gaussian scores, identity weighting",
+      nbasis_title,
       sep = "\n"
     ),
-    x = "Spatial dimension (p = q)", y = "Mean error",
+    x = "Spatial dimension (p = q)", y = "Mean relative error",
     color = "Weighting", shape = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
 sample_size_data <- plot_data[
-  p == 30 & sig == 0.5 & distr == "normal" &
+  nbasis == plot_nbasis &
+    p == 30 & sig == 0.5 & distr == "normal" &
     dependence == "independent"
 ]
 sample_size_plot <- ggplot(
@@ -477,6 +560,7 @@ sample_size_plot <- ggplot(
     title = paste(
       "Error vs. number of subjects",
       "Fixed: p = q = 30, sigma = 0.5, Gaussian scores, independent scores",
+      nbasis_title,
       sep = "\n"
     ),
     x = "Number of subjects", y = "Mean relative error",
@@ -485,7 +569,8 @@ sample_size_plot <- ggplot(
   theme_paper
 
 noise_data <- plot_data[
-  n == 50 & p == 30 & distr == "normal" &
+  nbasis == plot_nbasis &
+    n == 50 & p == 30 & distr == "normal" &
     dependence == "independent"
 ]
 noise_plot <- ggplot(
@@ -500,6 +585,7 @@ noise_plot <- ggplot(
     title = paste(
       "Error vs. noise level",
       "Fixed: n = 50, p = q = 30, Gaussian scores, independent scores",
+      nbasis_title,
       sep = "\n"
     ),
     x = "Noise standard deviation", y = "Mean relative error",
@@ -508,7 +594,8 @@ noise_plot <- ggplot(
   theme_paper
 
 distribution_data <- plot_data[
-  n == 50 & p == 30 & sig == 0.5 & dependence == "independent"
+  nbasis == plot_nbasis &
+    n == 50 & p == 30 & sig == 0.5 & dependence == "independent"
 ]
 distribution_plot <- ggplot(
   distribution_data,
@@ -523,6 +610,7 @@ distribution_plot <- ggplot(
     title = paste(
       "Error vs. FPC-score distribution",
       "Fixed: n = 50, p = q = 30, sigma = 0.5, independent scores",
+      nbasis_title,
       sep = "\n"
     ),
     x = "FPC-score distribution", y = "Mean relative error",

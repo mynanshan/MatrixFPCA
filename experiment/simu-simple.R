@@ -31,15 +31,15 @@ parser$add_argument("-s2", "--s_obs_max",
   help = "Max sampling ratio, 1 unit for 0.05."
 )
 parser$add_argument("-p", "--d_row",
-  type = "integer", default = 30,
+  type = "integer", default = 100,
   help = "Dimension of rows"
 )
 parser$add_argument("-q", "--d_col",
-  type = "integer", default = 30,
+  type = "integer", default = 100,
   help = "Dimension of columns"
 )
 parser$add_argument("-sig", "--noise_lvl",
-  type = "numeric", default = 0,
+  type = "numeric", default = 0.1,
   help = "Noise level sigma"
 )
 parser$add_argument("-rr", "--rank_row",
@@ -138,6 +138,7 @@ npc_time <- min(max(rt, 1), nt)
 
 nbasis <- if (args[["nbasis"]] <= 0) "theory" else
   min(max(args[["nbasis"]], 3), nt)
+nbasis_label <- as.character(nbasis)
 eigset <- args[["eigset"]]
 eigvalset <- args[["eigvalset"]]
 eigensystem <- args[["eigensystem"]]
@@ -155,8 +156,8 @@ results_dir <- args[["results_dir"]]
 manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
-  scores_distr <- "beta32"
-  score_dependence <- "common_signed"
+ # scores_distr <- "beta32"
+  # score_dependence <- "common_signed"
   dependence_param <- 0
 }
 
@@ -251,7 +252,7 @@ evaluate_covariance_fit <- function(fit, truth) {
   sseV <- matFNorm2(estimate$V - truth$V)
   iseK <- fun2dNorm2(estimate$K - truth$K, truth$t_grid)
   siseC <- matfcovDiffNorm2(estimate, truth)
-  c(
+  out <- c(
     sseU = sseU,
     sseV = sseV,
     iseK = iseK,
@@ -261,6 +262,24 @@ evaluate_covariance_fit <- function(fit, truth) {
     reliseK = iseK / fun2dNorm2(truth$K, truth$t_grid),
     relsiseC = siseC / matfcovNorm2(truth)
   )
+  gamma_metrics <- c(
+    sseGammaU = NA_real_,
+    sseGammaV = NA_real_,
+    relsseGammaU = NA_real_,
+    relsseGammaV = NA_real_
+  )
+  if (!is.null(fit$raw$U_unprojected) &&
+      !is.null(fit$raw$V_unprojected)) {
+    sseGammaU <- matFNorm2(fit$raw$U_unprojected - truth$U)
+    sseGammaV <- matFNorm2(fit$raw$V_unprojected - truth$V)
+    gamma_metrics <- c(
+      sseGammaU = sseGammaU,
+      sseGammaV = sseGammaV,
+      relsseGammaU = sseGammaU / matFNorm2(truth$U),
+      relsseGammaV = sseGammaV / matFNorm2(truth$V)
+    )
+  }
+  c(out, gamma_metrics)
 }
 
 evaluate_reconstruction <- function(fit, data, eig_true, scores_true) {
@@ -313,6 +332,8 @@ fit_results <- lapply(weight_schemes, function(scheme) {
     "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
     "Rel. ISE (K): ", metrics[["reliseK"]], "\n",
     "Rel. SISE (C): ", metrics[["relsiseC"]], "\n",
+    "Rel. SSE (raw Gamma_U): ", metrics[["relsseGammaU"]], "\n",
+    "Rel. SSE (raw Gamma_V): ", metrics[["relsseGammaV"]], "\n",
     "MSE (X): ", metrics[["mseX"]], "\n",
     "Rel. MSE (X): ", metrics[["relmseX"]], "\n",
     sep = ""
@@ -428,6 +449,7 @@ if (ifsave) {
     "_dp", file_token(dependence_param),
     "_s", s1, "-", s2,
     "_nt", nt,
+    "_nb", file_token(nbasis_label),
     "_r", npc_row, "-", npc_col, "-", npc_time,
     "_eig", file_token(eigensystem),
     "_evc", eigset,
@@ -440,10 +462,11 @@ if (ifsave) {
   header <- c(
     "method", "seed", "weight",
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-    "s1", "s2", "nt", "rank_row", "rank_col", "rank_time",
+    "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
     "eigensystem", "eigvec_set", "eigval_set",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC",
+    "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
     "mseX", "relmseX", "runtime"
   )
 
@@ -458,7 +481,7 @@ if (ifsave) {
     as.list(stats::setNames(c(
       "MatFPCA", seed, scheme,
       n, p, q, sig, scores_distr, score_dependence, dependence_param,
-      s1, s2, nt, npc_row, npc_col, npc_time,
+      s1, s2, nt, nbasis_label, npc_row, npc_col, npc_time,
       eigensystem, eigset, eigvalset,
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),
@@ -468,6 +491,10 @@ if (ifsave) {
       formatter(metrics[["relsseV"]]),
       formatter(metrics[["reliseK"]]),
       formatter(metrics[["relsiseC"]]),
+      formatter(metrics[["sseGammaU"]]),
+      formatter(metrics[["sseGammaV"]]),
+      formatter(metrics[["relsseGammaU"]]),
+      formatter(metrics[["relsseGammaV"]]),
       formatter(metrics[["mseX"]]),
       formatter(metrics[["relmseX"]]),
       formatter(runtime, logarithm = FALSE)

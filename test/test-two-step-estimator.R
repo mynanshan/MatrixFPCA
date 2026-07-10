@@ -64,6 +64,10 @@ for (fit in list(fit_identity, fit_refined, fit_joint_identity, fit_joint_refine
     min(eigen(covariance$V, symmetric = TRUE, only.values = TRUE)$values) > -1e-8,
     min(eigen(covariance$K, symmetric = TRUE, only.values = TRUE)$values) > -1e-8,
     covariance$sig2 >= 0,
+    !is.null(fit$raw$Gamma_U),
+    !is.null(fit$raw$Gamma_V),
+    !is.null(fit$raw$U_unprojected),
+    !is.null(fit$raw$V_unprojected),
     identical(names(fit$temporal_fit$fit), c("K", "G")),
     identical(names(fit$temporal_fit$nbasis), c("K", "G")),
     fit$temporal_fit$temporal_method %in% c("two_step", "joint")
@@ -96,5 +100,14 @@ stopifnot(
   inherits(weights_refined_zero, "shared"),
   isTRUE(all.equal(weights_refined_zero, weights_inverse))
 )
+
+singular_weight <- .gaussian_block_weight(
+  diag(c(3, 1, 0)),
+  A = 2,
+  B = 0.1,
+  C = 0.01,
+  ridge = 0
+)
+stopifnot(abs(singular_weight[3, 3]) < 1e-12)
 
 cat("Temporal estimator checks passed.\n")
