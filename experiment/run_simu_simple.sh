@@ -360,7 +360,7 @@ add_config() {
   done
 }
 
-# Baseline: n=50, p=q=30, sigma=0.5, Gaussian independent scores.
+# Baseline: n=50, p=q=30, sigma=0.1, Gaussian independent scores.
 # Each block changes one scientifically meaningful feature, except the final
 # dependence-by-dimension block, which checks whether spatial averaging is lost.
 

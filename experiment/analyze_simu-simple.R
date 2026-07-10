@@ -191,18 +191,18 @@ make_expected_configs <- function(
     }
   }
 
-  for (n in c(25, 50, 100)) add_config(n, 30, 0.5, "normal", "independent", 0)
+  for (n in c(25, 50, 75, 100)) add_config(n, 30, 0.1, "normal", "independent", 0)
   distribution_grid <- c("normal", "uniform", "beta32", "t5")
   for (p in dimension_grid) {
     for (distr in distribution_grid) {
-      add_config(50, p, 0.5, distr, "independent", 0)
+      add_config(50, p, 0.1, distr, "independent", 0)
     }
   }
-  for (sig in c(0.1, 0.5, 1)) add_config(50, 30, sig, "normal", "independent", 0)
+  for (sig in c(0.1, 0.3, 0.5)) add_config(50, 30, sig, "normal", "independent", 0)
   for (p in dimension_grid) {
-    add_config(50, p, 0.5, "normal", "common_amplitude", 1)
-    add_config(50, p, 0.5, "normal", "common_signed", 0)
-    add_config(50, p, 0.5, "normal", "heavy_amplitude", 1.5)
+    add_config(50, p, 0.1, "normal", "common_amplitude", 1)
+    add_config(50, p, 0.1, "normal", "common_signed", 0)
+    add_config(50, p, 0.1, "normal", "heavy_amplitude", 1.5)
   }
 
   configs[, config_id := sprintf("%03d", .I)]
@@ -522,7 +522,7 @@ dimension_metric_data[
 
 dimension_data <- dimension_metric_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
-    n == 50 & sig == 0.5 & dependence == "independent" &
+    n == 50 & sig == 0.1 & dependence == "independent" &
     p %in% dimension_grid
 ]
 dimension_plot <- ggplot(
@@ -544,7 +544,7 @@ dimension_plot <- ggplot(
   labs(
     title = paste(
       "Error vs. spatial dimension",
-      "Fixed: n = 50, sigma = 0.5, independent scores",
+      "Fixed: n = 50, sigma = 0.1, independent scores",
       nbasis_title,
       weight_folds_title,
       sep = "\n"
@@ -556,7 +556,7 @@ dimension_plot <- ggplot(
 
 dependent_dimension_data <- dimension_metric_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
-    n == 50 & sig == 0.5 & distr == "normal" &
+    n == 50 & sig == 0.1 & distr == "normal" &
     dependence != "independent" & p %in% dimension_grid &
     weight == "identity"
 ]
@@ -579,7 +579,7 @@ dependent_dimension_plot <- ggplot(
   labs(
     title = paste(
       "Error vs. spatial dimension",
-      "Fixed: n = 50, sigma = 0.5, Gaussian scores, identity weighting",
+      "Fixed: n = 50, sigma = 0.1, Gaussian scores, identity weighting",
       nbasis_title,
       weight_folds_title,
       sep = "\n"
@@ -591,7 +591,7 @@ dependent_dimension_plot <- ggplot(
 
 sample_size_data <- plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
-    p == 30 & sig == 0.5 & distr == "normal" &
+    p == 30 & sig == 0.1 & distr == "normal" &
     dependence == "independent"
 ]
 sample_size_plot <- ggplot(
@@ -605,7 +605,7 @@ sample_size_plot <- ggplot(
   labs(
     title = paste(
       "Error vs. number of subjects",
-      "Fixed: p = q = 30, sigma = 0.5, Gaussian scores, independent scores",
+      "Fixed: p = q = 30, sigma = 0.1, Gaussian scores, independent scores",
       nbasis_title,
       weight_folds_title,
       sep = "\n"
@@ -643,7 +643,7 @@ noise_plot <- ggplot(
 
 distribution_data <- plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
-    n == 50 & p == 30 & sig == 0.5 & dependence == "independent"
+    n == 50 & p == 30 & sig == 0.1 & dependence == "independent"
 ]
 distribution_plot <- ggplot(
   distribution_data,
@@ -657,7 +657,7 @@ distribution_plot <- ggplot(
   labs(
     title = paste(
       "Error vs. FPC-score distribution",
-      "Fixed: n = 50, p = q = 30, sigma = 0.5, independent scores",
+      "Fixed: n = 50, p = q = 30, sigma = 0.1, independent scores",
       nbasis_title,
       weight_folds_title,
       sep = "\n"
