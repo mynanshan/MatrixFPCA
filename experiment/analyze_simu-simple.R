@@ -419,6 +419,11 @@ dimension_plot <- ggplot(
   scale_y_log10() +
   facet_grid(metric ~ distr_label, scales = "free_y") +
   labs(
+    title = paste(
+      "Error vs. spatial dimension",
+      "Fixed: n = 50, sigma = 0.5, independent scores",
+      sep = "\n"
+    ),
     x = "Spatial dimension (p = q)", y = "Mean error",
     color = "Weighting", shape = "Weighting", fill = "Weighting"
   ) +
@@ -426,7 +431,8 @@ dimension_plot <- ggplot(
 
 dependent_dimension_data <- dimension_metric_data[
   n == 50 & sig == 0.5 & distr == "normal" &
-    dependence != "independent" & p %in% dimension_grid
+    dependence != "independent" & p %in% dimension_grid &
+    weight == "identity"
 ]
 dependent_dimension_plot <- ggplot(
   dependent_dimension_data,
@@ -445,6 +451,11 @@ dependent_dimension_plot <- ggplot(
   scale_y_log10() +
   facet_grid(metric ~ dependence, scales = "free_y") +
   labs(
+    title = paste(
+      "Error vs. spatial dimension",
+      "Fixed: n = 50, sigma = 0.5, Gaussian scores, identity weighting",
+      sep = "\n"
+    ),
     x = "Spatial dimension (p = q)", y = "Mean error",
     color = "Weighting", shape = "Weighting", fill = "Weighting"
   ) +
@@ -463,6 +474,11 @@ sample_size_plot <- ggplot(
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
   labs(
+    title = paste(
+      "Error vs. number of subjects",
+      "Fixed: p = q = 30, sigma = 0.5, Gaussian scores, independent scores",
+      sep = "\n"
+    ),
     x = "Number of subjects", y = "Mean relative error",
     color = "Weighting", shape = "Weighting"
   ) +
@@ -481,6 +497,11 @@ noise_plot <- ggplot(
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
   labs(
+    title = paste(
+      "Error vs. noise level",
+      "Fixed: n = 50, p = q = 30, Gaussian scores, independent scores",
+      sep = "\n"
+    ),
     x = "Noise standard deviation", y = "Mean relative error",
     color = "Weighting", shape = "Weighting"
   ) +
@@ -496,9 +517,14 @@ distribution_plot <- ggplot(
   )
 ) +
   geom_col(position = position_dodge(width = 0.8), width = 0.7) +
-  scale_y_log10() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
   facet_wrap(~metric, scales = "free_y") +
   labs(
+    title = paste(
+      "Error vs. FPC-score distribution",
+      "Fixed: n = 50, p = q = 30, sigma = 0.5, independent scores",
+      sep = "\n"
+    ),
     x = "FPC-score distribution", y = "Mean relative error",
     fill = "Weighting"
   ) +
