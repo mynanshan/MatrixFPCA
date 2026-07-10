@@ -176,11 +176,12 @@ results_dir <- args[["results_dir"]]
 manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
-  # seed <- 1
+  seed <- 1
   # scores_distr <- "beta32"
   # score_dependence <- "common_signed"
   dependence_param <- 0
   temporal_method_default <- "two_step"
+  weight_folds <- 10
 }
 
 cat(
