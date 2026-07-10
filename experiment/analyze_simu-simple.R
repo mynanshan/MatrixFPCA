@@ -58,6 +58,7 @@ if (!"eigval_set" %in% names(res)) res[, eigval_set := 1]
 if (!"nbasis" %in% names(res)) res[, nbasis := "theory"]
 res[, nbasis := as.character(nbasis)]
 optional_metric_columns <- c(
+  "iseKc", "reliseKc",
   "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV"
 )
 for (column in optional_metric_columns) {
@@ -280,9 +281,9 @@ completion_by_setting[, completion_rate := completed_runs / expected_runs]
 setorder(completion_by_setting, config_id)
 
 # Stored errors are logarithms; convert them back before averaging.
-metric_columns <- c("relsseU", "relsseV", "reliseK", "relsiseC")
+metric_columns <- c("relsseU", "relsseV", "reliseK", "reliseKc", "relsiseC")
 diagnostic_metric_columns <- c("relsseGammaU", "relsseGammaV")
-absolute_metric_columns <- c("sseU", "sseV", "iseK", "sseGammaU", "sseGammaV")
+absolute_metric_columns <- c("sseU", "sseV", "iseK", "iseKc", "sseGammaU", "sseGammaV")
 for (column in c(metric_columns, diagnostic_metric_columns, absolute_metric_columns)) {
   res[, paste0(column, "_raw") := exp(get(column))]
 }
@@ -320,6 +321,10 @@ summary_long <- res[
     reliseK_sd = sd_metric(reliseK_raw),
     iseK_mean = mean_metric(iseK_raw),
     iseK_sd = sd_metric(iseK_raw),
+    reliseKc_mean = mean_metric(reliseKc_raw),
+    reliseKc_sd = sd_metric(reliseKc_raw),
+    iseKc_mean = mean_metric(iseKc_raw),
+    iseKc_sd = sd_metric(iseKc_raw),
     relsiseC_mean = mean_metric(relsiseC_raw),
     relsiseC_sd = sd_metric(relsiseC_raw),
     relsseGammaU_mean = mean_metric(relsseGammaU_raw),
@@ -345,6 +350,7 @@ summary_wide <- dcast(
     "relsseU_mean", "relsseU_sd", "sseU_pixel_mean", "sseU_pixel_sd",
     "relsseV_mean", "relsseV_sd", "sseV_pixel_mean", "sseV_pixel_sd",
     "reliseK_mean", "reliseK_sd", "iseK_mean", "iseK_sd",
+    "reliseKc_mean", "reliseKc_sd", "iseKc_mean", "iseKc_sd",
     "relsiseC_mean", "relsiseC_sd",
     "relsseGammaU_mean", "relsseGammaU_sd",
     "relsseGammaV_mean", "relsseGammaV_sd"
@@ -373,7 +379,8 @@ plot_data <- melt(
   summary_long,
   id.vars = setting_columns,
   measure.vars = c(
-    "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
+    "relsseU_mean", "relsseV_mean", "reliseK_mean", "reliseKc_mean",
+    "relsiseC_mean"
   ),
   variable.name = "metric",
   value.name = "mean_error"
@@ -383,9 +390,10 @@ plot_data[
   metric := factor(
     metric,
     levels = c(
-      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
+      "relsseU_mean", "relsseV_mean", "reliseK_mean", "reliseKc_mean",
+      "relsiseC_mean"
     ),
-    labels = c("U", "V", "K", "Full covariance")
+    labels = c("U", "V", "K", "K trace-corrected", "Full covariance")
   )
 ]
 plot_data[
@@ -433,10 +441,12 @@ dimension_metric_data <- melt(
   id.vars = c(setting_columns, "n_rep"),
   measure.vars = list(
     mean_error = c(
-      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
+      "relsseU_mean", "relsseV_mean", "reliseK_mean", "reliseKc_mean",
+      "relsiseC_mean"
     ),
     sd_error = c(
-      "relsseU_sd", "relsseV_sd", "reliseK_sd", "relsiseC_sd"
+      "relsseU_sd", "relsseV_sd", "reliseK_sd", "reliseKc_sd",
+      "relsiseC_sd"
     )
   ),
   variable.name = "metric_index"
@@ -445,10 +455,11 @@ dimension_metric_data[
   ,
   metric := factor(
     metric_index,
-    levels = 1:4,
+    levels = 1:5,
     labels = c(
       "U relative Frobenius", "V relative Frobenius",
-      "K relative ISE", "Full covariance"
+      "K relative ISE", "K relative ISE, trace-corrected",
+      "Full covariance"
     )
   )
 ]

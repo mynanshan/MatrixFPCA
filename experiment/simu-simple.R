@@ -250,16 +250,30 @@ evaluate_covariance_fit <- function(fit, truth) {
   estimate <- fit$C
   sseU <- matFNorm2(estimate$U - truth$U)
   sseV <- matFNorm2(estimate$V - truth$V)
+  normK <- fun2dNorm2(truth$K, truth$t_grid)
   iseK <- fun2dNorm2(estimate$K - truth$K, truth$t_grid)
+  true_trace_K <- trapz_average(truth$t_grid, diag(truth$K)) *
+    diff(range(truth$t_grid))
+  estimate_trace_K <- trapz_average(truth$t_grid, diag(estimate$K)) *
+    diff(range(truth$t_grid))
+  if (is.finite(estimate_trace_K) &&
+      abs(estimate_trace_K) > 10 * .Machine$double.eps) {
+    Kc <- estimate$K * (true_trace_K / estimate_trace_K)
+    iseKc <- fun2dNorm2(Kc - truth$K, truth$t_grid)
+  } else {
+    iseKc <- NA_real_
+  }
   siseC <- matfcovDiffNorm2(estimate, truth)
   out <- c(
     sseU = sseU,
     sseV = sseV,
     iseK = iseK,
+    iseKc = iseKc,
     siseC = siseC,
     relsseU = sseU / matFNorm2(truth$U),
     relsseV = sseV / matFNorm2(truth$V),
-    reliseK = iseK / fun2dNorm2(truth$K, truth$t_grid),
+    reliseK = iseK / normK,
+    reliseKc = iseKc / normK,
     relsiseC = siseC / matfcovNorm2(truth)
   )
   gamma_metrics <- c(
@@ -331,6 +345,7 @@ fit_results <- lapply(weight_schemes, function(scheme) {
     "Rel. SSE (U): ", metrics[["relsseU"]], "\n",
     "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
     "Rel. ISE (K): ", metrics[["reliseK"]], "\n",
+    "Rel. ISE (K, trace-corrected): ", metrics[["reliseKc"]], "\n",
     "Rel. SISE (C): ", metrics[["relsiseC"]], "\n",
     "Rel. SSE (raw Gamma_U): ", metrics[["relsseGammaU"]], "\n",
     "Rel. SSE (raw Gamma_V): ", metrics[["relsseGammaV"]], "\n",
@@ -464,8 +479,8 @@ if (ifsave) {
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
     "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
     "eigensystem", "eigvec_set", "eigval_set",
-    "sseU", "sseV", "iseK", "siseC",
-    "relsseU", "relsseV", "reliseK", "relsiseC",
+    "sseU", "sseV", "iseK", "iseKc", "siseC",
+    "relsseU", "relsseV", "reliseK", "reliseKc", "relsiseC",
     "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
     "mseX", "relmseX", "runtime"
   )
@@ -486,10 +501,12 @@ if (ifsave) {
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),
       formatter(metrics[["iseK"]]),
+      formatter(metrics[["iseKc"]]),
       formatter(metrics[["siseC"]]),
       formatter(metrics[["relsseU"]]),
       formatter(metrics[["relsseV"]]),
       formatter(metrics[["reliseK"]]),
+      formatter(metrics[["reliseKc"]]),
       formatter(metrics[["relsiseC"]]),
       formatter(metrics[["sseGammaU"]]),
       formatter(metrics[["sseGammaV"]]),
