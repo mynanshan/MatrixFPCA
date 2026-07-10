@@ -10,6 +10,11 @@ output_dir <- if (length(args) >= 2L) args[[2L]] else
   file.path("experiment", "summary")
 expected_repetitions <- if (length(args) >= 3L) as.integer(args[[3L]]) else NA_integer_
 requested_plot_nbasis <- if (length(args) >= 4L) args[[4L]] else NA_character_
+requested_plot_weight_folds <- if (length(args) >= 5L) {
+  as.integer(args[[5L]])
+} else {
+  NA_integer_
+}
 manifest_dirs <- c(
   file.path(results_dir, "manifests"),
   file.path("logs", "manifests")
@@ -56,6 +61,7 @@ if (!"eigensystem" %in% names(res)) res[, eigensystem := "legacy"]
 if (!"eigvec_set" %in% names(res)) res[, eigvec_set := 2]
 if (!"eigval_set" %in% names(res)) res[, eigval_set := 1]
 if (!"nbasis" %in% names(res)) res[, nbasis := "theory"]
+if (!"weight_folds" %in% names(res)) res[, weight_folds := 1]
 res[, nbasis := as.character(nbasis)]
 optional_metric_columns <- c(
   "iseKc", "reliseKc",
@@ -67,7 +73,8 @@ for (column in optional_metric_columns) {
 
 required <- c(
   "seed", "weight", "n", "p", "q", "sig", "distr", "dependence",
-  "dependence_param", "s1", "s2", "nt", "nbasis", "rank_row", "rank_col",
+  "dependence_param", "s1", "s2", "nt", "nbasis", "weight_folds",
+  "rank_row", "rank_col",
   "rank_time", "eigensystem", "eigvec_set", "eigval_set",
   "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC"
 )
@@ -78,7 +85,7 @@ if (length(missing)) {
 
 numeric_columns <- c(
   "seed", "n", "p", "q", "sig", "dependence_param", "s1", "s2", "nt",
-  "rank_row", "rank_col", "rank_time", "eigvec_set", "eigval_set",
+  "weight_folds", "rank_row", "rank_col", "rank_time", "eigvec_set", "eigval_set",
   "sseU", "sseV", "iseK", "relsseU", "relsseV", "reliseK", "relsiseC",
   optional_metric_columns
 )
@@ -126,12 +133,14 @@ read_expected_from_manifests <- function(manifest_dirs) {
   if (!"rank_row" %in% names(expected)) expected[, rank_row := p]
   if (!"rank_col" %in% names(expected)) expected[, rank_col := q]
   if (!"nbasis" %in% names(expected)) expected[, nbasis := "theory"]
+  if (!"weight_folds" %in% names(expected)) expected[, weight_folds := 1]
   expected[, nbasis := as.character(nbasis)]
   expected[
     ,
     .(
       config_id, seed, n, p, q, sig, distr, dependence, dependence_param,
-      s1, s2, nt, nbasis, rank_row, rank_col, rank_time, eigensystem,
+      s1, s2, nt, nbasis, weight_folds,
+      rank_row, rank_col, rank_time, eigensystem,
       eigvec_set, eigval_set
     )
   ]
@@ -140,6 +149,7 @@ read_expected_from_manifests <- function(manifest_dirs) {
 make_expected_configs <- function(
   repetitions,
   default_nbasis,
+  default_weight_folds,
   default_eigensystems
 ) {
   configs <- data.table(
@@ -154,6 +164,7 @@ make_expected_configs <- function(
     s2 = numeric(),
     nt = numeric(),
     nbasis = character(),
+    weight_folds = numeric(),
     rank_row = numeric(),
     rank_col = numeric(),
     rank_time = numeric(),
@@ -170,6 +181,7 @@ make_expected_configs <- function(
         dependence = dependence, dependence_param = dependence_param,
         s1 = 2, s2 = 4, nt = 51,
         nbasis = default_nbasis,
+        weight_folds = default_weight_folds,
         rank_row = p, rank_col = p, rank_time = eig$rank_time,
         eigensystem = eig$eigensystem,
         eigvec_set = eig$eigvec_set,
@@ -202,7 +214,8 @@ make_expected_configs <- function(
     ,
     .(
       config_id, seed, n, p, q, sig, distr, dependence, dependence_param,
-      s1, s2, nt, nbasis, rank_row, rank_col, rank_time, eigensystem,
+      s1, s2, nt, nbasis, weight_folds,
+      rank_row, rank_col, rank_time, eigensystem,
       eigvec_set, eigval_set
     )
   ]
@@ -210,13 +223,17 @@ make_expected_configs <- function(
 
 run_columns <- c(
   "seed", "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-  "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
+  "s1", "s2", "nt", "nbasis", "weight_folds",
+  "rank_row", "rank_col", "rank_time",
   "eigensystem", "eigvec_set", "eigval_set"
 )
 setting_columns_no_weight <- setdiff(run_columns, "seed")
 available_nbasis <- sort(unique(res$nbasis))
 default_expected_nbasis <- if ("25" %in% available_nbasis) "25" else
   available_nbasis[[1L]]
+available_weight_folds <- sort(unique(res$weight_folds))
+default_expected_weight_folds <- if (10 %in% available_weight_folds) 10 else
+  available_weight_folds[[1L]]
 default_expected_eigensystems <- unique(res[
   ,
   .(eigensystem, eigvec_set, eigval_set, rank_time)
@@ -241,6 +258,7 @@ if (is.null(expected_runs)) {
   expected_runs <- make_expected_configs(
     expected_repetitions,
     default_nbasis = default_expected_nbasis,
+    default_weight_folds = default_expected_weight_folds,
     default_eigensystems = default_expected_eigensystems
   )
 } else {
@@ -301,7 +319,8 @@ sd_metric <- function(x) {
 
 setting_columns <- c(
   "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-  "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
+  "s1", "s2", "nt", "nbasis", "weight_folds",
+  "rank_row", "rank_col", "rank_time",
   "eigensystem", "eigvec_set", "eigval_set", "weight"
 )
 
@@ -342,7 +361,7 @@ setorder(
 summary_wide <- dcast(
   summary_long,
   n + p + q + sig + distr + dependence + dependence_param + s1 + s2 + nt +
-    nbasis + rank_row + rank_col + rank_time + eigensystem +
+    nbasis + weight_folds + rank_row + rank_col + rank_time + eigensystem +
     eigvec_set + eigval_set ~
     weight,
   value.var = c(
@@ -362,7 +381,8 @@ summary_wide <- dcast(
 paired <- dcast(
   res,
   seed + n + p + q + sig + distr + dependence + dependence_param +
-    s1 + s2 + nt + nbasis + rank_row + rank_col + rank_time + eigensystem +
+    s1 + s2 + nt + nbasis + weight_folds +
+    rank_row + rank_col + rank_time + eigensystem +
     eigvec_set + eigval_set ~ weight,
   value.var = paste0(metric_columns, "_raw")
 )
@@ -435,6 +455,19 @@ nbasis_title <- if (identical(plot_nbasis, "theory")) {
 } else {
   paste("temporal marginal basis =", plot_nbasis)
 }
+plot_weight_folds <- requested_plot_weight_folds
+if (is.na(plot_weight_folds)) {
+  plot_weight_folds <- if (10 %in% available_weight_folds) 10 else
+    available_weight_folds[[1L]]
+}
+if (!plot_weight_folds %in% available_weight_folds) {
+  warning(
+    "Requested weight_folds = ", plot_weight_folds, " is absent; using ",
+    available_weight_folds[[1L]], "."
+  )
+  plot_weight_folds <- available_weight_folds[[1L]]
+}
+weight_folds_title <- paste("refined-weight folds =", plot_weight_folds)
 
 dimension_metric_data <- melt(
   summary_long,
@@ -488,7 +521,7 @@ dimension_metric_data[
 ]
 
 dimension_data <- dimension_metric_data[
-  nbasis == plot_nbasis &
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     n == 50 & sig == 0.5 & dependence == "independent" &
     p %in% dimension_grid
 ]
@@ -513,6 +546,7 @@ dimension_plot <- ggplot(
       "Error vs. spatial dimension",
       "Fixed: n = 50, sigma = 0.5, independent scores",
       nbasis_title,
+      weight_folds_title,
       sep = "\n"
     ),
     x = "Spatial dimension (p = q)", y = "Mean relative error",
@@ -521,7 +555,7 @@ dimension_plot <- ggplot(
   theme_paper
 
 dependent_dimension_data <- dimension_metric_data[
-  nbasis == plot_nbasis &
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     n == 50 & sig == 0.5 & distr == "normal" &
     dependence != "independent" & p %in% dimension_grid &
     weight == "identity"
@@ -547,6 +581,7 @@ dependent_dimension_plot <- ggplot(
       "Error vs. spatial dimension",
       "Fixed: n = 50, sigma = 0.5, Gaussian scores, identity weighting",
       nbasis_title,
+      weight_folds_title,
       sep = "\n"
     ),
     x = "Spatial dimension (p = q)", y = "Mean relative error",
@@ -555,7 +590,7 @@ dependent_dimension_plot <- ggplot(
   theme_paper
 
 sample_size_data <- plot_data[
-  nbasis == plot_nbasis &
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     p == 30 & sig == 0.5 & distr == "normal" &
     dependence == "independent"
 ]
@@ -572,6 +607,7 @@ sample_size_plot <- ggplot(
       "Error vs. number of subjects",
       "Fixed: p = q = 30, sigma = 0.5, Gaussian scores, independent scores",
       nbasis_title,
+      weight_folds_title,
       sep = "\n"
     ),
     x = "Number of subjects", y = "Mean relative error",
@@ -580,7 +616,7 @@ sample_size_plot <- ggplot(
   theme_paper
 
 noise_data <- plot_data[
-  nbasis == plot_nbasis &
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     n == 50 & p == 30 & distr == "normal" &
     dependence == "independent"
 ]
@@ -597,6 +633,7 @@ noise_plot <- ggplot(
       "Error vs. noise level",
       "Fixed: n = 50, p = q = 30, Gaussian scores, independent scores",
       nbasis_title,
+      weight_folds_title,
       sep = "\n"
     ),
     x = "Noise standard deviation", y = "Mean relative error",
@@ -605,7 +642,7 @@ noise_plot <- ggplot(
   theme_paper
 
 distribution_data <- plot_data[
-  nbasis == plot_nbasis &
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     n == 50 & p == 30 & sig == 0.5 & dependence == "independent"
 ]
 distribution_plot <- ggplot(
@@ -622,6 +659,7 @@ distribution_plot <- ggplot(
       "Error vs. FPC-score distribution",
       "Fixed: n = 50, p = q = 30, sigma = 0.5, independent scores",
       nbasis_title,
+      weight_folds_title,
       sep = "\n"
     ),
     x = "FPC-score distribution", y = "Mean relative error",

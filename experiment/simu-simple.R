@@ -39,7 +39,7 @@ parser$add_argument("-q", "--d_col",
   help = "Dimension of columns"
 )
 parser$add_argument("-sig", "--noise_lvl",
-  type = "numeric", default = 0.3,
+  type = "numeric", default = 0.1,
   help = "Noise level sigma"
 )
 parser$add_argument("-rr", "--rank_row",
@@ -96,6 +96,10 @@ parser$add_argument("-tm", "--temporal_method",
   type = "character", default = "two_step",
   choices = c("two_step", "joint"),
   help = "Method for temporal covariance estimation."
+)
+parser$add_argument("-wf", "--weight_folds",
+  type = "integer", default = 10,
+  help = "Subject folds for refined weights (1 uses the legacy same sample)."
 )
 parser$add_argument("--seed",
   type = "integer", default = -1,
@@ -158,6 +162,10 @@ if (score_dependence %in% c("independent", "common_signed")) {
   dependence_param <- 0
 }
 temporal_method_default <- args[["temporal_method"]]
+weight_folds <- args[["weight_folds"]]
+if (!is.finite(weight_folds) || weight_folds < 1L || weight_folds > n) {
+  stop("weight_folds must lie between 1 and n_subjects.")
+}
 seed <- args[["seed"]]
 seed <- ifelse(seed < 0, ceiling(runif(1)*9999), seed)
 ifsave <- as.logical(args[["save"]])
@@ -167,7 +175,7 @@ results_dir <- args[["results_dir"]]
 manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
-  seed <- 1
+  # seed <- 1
   # scores_distr <- "beta32"
   # score_dependence <- "common_signed"
   dependence_param <- 0
@@ -193,7 +201,8 @@ cat(
   "eigvalSet=", eigvalset, "\n",
   "scores_distr=", scores_distr, "\n",
   "score_dependence=", score_dependence, "\n",
-  "dependence_param=", dependence_param, "\n"
+  "dependence_param=", dependence_param, "\n",
+  "weight_folds=", weight_folds, "\n"
 )
 
 library(fda)
@@ -331,7 +340,8 @@ fit_results <- lapply(weight_schemes, function(scheme) {
       noise = estimate_noise,
       nbasis = nbasis,
       opwIter = 3,
-      temporal_method = temporal_method_default
+      temporal_method = temporal_method_default,
+      nfolds = weight_folds
     )
   })
   runtime <- unname(fit_timing[["elapsed"]])
@@ -464,6 +474,7 @@ if (ifsave) {
     "_s", s1, "-", s2,
     "_nt", nt,
     "_nb", file_token(nbasis_label),
+    "_wf", weight_folds,
     "_r", npc_row, "-", npc_col, "-", npc_time,
     "_eig", file_token(eigensystem),
     "_evc", eigset,
@@ -476,7 +487,8 @@ if (ifsave) {
   header <- c(
     "method", "seed", "weight",
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-    "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
+    "s1", "s2", "nt", "nbasis", "weight_folds",
+    "rank_row", "rank_col", "rank_time",
     "eigensystem", "eigvec_set", "eigval_set",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC",
@@ -495,7 +507,7 @@ if (ifsave) {
     as.list(stats::setNames(c(
       "MatFPCA", seed, scheme,
       n, p, q, sig, scores_distr, score_dependence, dependence_param,
-      s1, s2, nt, nbasis_label, npc_row, npc_col, npc_time,
+      s1, s2, nt, nbasis_label, weight_folds, npc_row, npc_col, npc_time,
       eigensystem, eigset, eigvalset,
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),

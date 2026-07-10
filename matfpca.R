@@ -892,6 +892,105 @@ estimate_K.matfdata.irreg <- function(
   out
 }
 
+.estimate_K_crossfit_irreg <- function(
+  data,
+  W1,
+  W2,
+  beta,
+  noise = FALSE,
+  nbasis = "theory",
+  ndeg = 3,
+  sig2.min = NULL,
+  temporal_method = c("two_step", "joint"),
+  use_subject_weights = FALSE,
+  U_tilde = NULL,
+  V_tilde = NULL
+) {
+  stopifnot(inherits(data, "matfdata.irreg"))
+  temporal_method <- match.arg(temporal_method)
+  n <- count_subj(data)
+  if (length(W1) != n || length(W2) != n || length(beta) != n) {
+    stop("Cross-fitted temporal weights and scales must have one entry per subject.")
+  }
+  beta <- as.numeric(beta)
+  if (any(!is.finite(beta)) || any(beta <= 0)) {
+    stop("Cross-fitted temporal signal scales must be positive and finite.")
+  }
+
+  nt <- length(data$t_grid)
+  P <- prod(data$vdim)
+  Nis <- vapply(data$t_idx_list, length, integer(1))
+  ndiag <- sum(Nis)
+  noffdiag <- sum(Nis * (Nis - 1L))
+  nb <- choose.nbasis(
+    nbasis = nbasis,
+    ndeg = ndeg,
+    ndiag = ndiag,
+    noffdiag = noffdiag,
+    nloc = length(unique(unlist(data$t_idx_list))),
+    Nis = Nis,
+    p = data$vdim[1],
+    q = data$vdim[2],
+    U_tilde = U_tilde,
+    V_tilde = V_tilde
+  )
+
+  # The off-diagonal entries use held-out, fold-specific refined weights and
+  # are calibrated to a common K scale before smoothing. Diagonal entries use
+  # identity weights, so their expectation is K(t, t) + sig2 in every fold.
+  # This avoids mixing fold-specific nugget multipliers in the noise smoother.
+  scatter <- foreach::foreach(i = seq_len(n), .combine = rbind) %do% {
+    Xi <- get_subj_tnsr(data, i)
+    Ki_wk <- get_working_K(Xi, W1[[i]], W2[[i]]) / (P * beta[[i]])
+    identity_diag <- apply(Xi@data^2, 3L, sum) / P
+    diag(Ki_wk) <- identity_diag
+
+    tid <- data$t_idx_list[[i]]
+    t_cov_mesh <- pracma::meshgrid(data$t_grid[tid])
+    t1 <- as.vector(t_cov_mesh$X)
+    t2 <- as.vector(t_cov_mesh$Y)
+    is_diag <- t1 == t2
+    Ni <- length(tid)
+    w_off <- if (use_subject_weights) 1 / (Ni * (Ni - 1L)) else 1
+    w_diag <- if (use_subject_weights) 1 / Ni else 1
+
+    data.table::data.table(
+      t1 = t1,
+      t2 = t2,
+      Kval = as.vector(Ki_wk),
+      is_diag = is_diag,
+      w = ifelse(is_diag, w_diag, w_off)
+    )
+  }
+
+  if (temporal_method == "joint") {
+    return(.fit_temporal_joint(
+      scatter_data = scatter,
+      t_grid = data$t_grid,
+      nbasis = nb,
+      ndeg = ndeg,
+      noise = noise,
+      sig2.min = sig2.min
+    ))
+  }
+
+  out <- .fit_temporal_two_step(
+    offdiag_data = scatter[!scatter$is_diag, ],
+    diag_data = data.table::data.table(
+      t = scatter$t1[scatter$is_diag],
+      Kval = scatter$Kval[scatter$is_diag],
+      w = scatter$w[scatter$is_diag]
+    ),
+    t_grid = data$t_grid,
+    nbasis = nb,
+    ndeg = ndeg,
+    noise = noise,
+    sig2.min = sig2.min
+  )
+  out$temporal_method <- "two_step"
+  out
+}
+
 estimate_U <- function(data, W2, W3, ...) {
   UseMethod("estimate_U")
 }
@@ -931,7 +1030,8 @@ estimate_U.matfdata.irreg <- function(data, W2, W3, ...) {
     i = seq_len(n),
     .combine = "+"
   ) %do% {
-    U_wk <- get_working_U(get_subj_tnsr(data, i), W2, W3[[i]]) / (q * Nbar)
+    W2i <- if (is.list(W2)) W2[[i]] else W2
+    U_wk <- get_working_U(get_subj_tnsr(data, i), W2i, W3[[i]]) / (q * Nbar)
     U_wk / n
   }
   U_hat
@@ -976,7 +1076,8 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     i = seq_len(n),
     .combine = "+"
   ) %do% {
-    V_wk <- get_working_V(get_subj_tnsr(data, i), W1, W3[[i]]) / (p * Nbar)
+    W1i <- if (is.list(W1)) W1[[i]] else W1
+    V_wk <- get_working_V(get_subj_tnsr(data, i), W1i, W3[[i]]) / (p * Nbar)
     V_wk / n
   }
   V_hat
@@ -1024,6 +1125,253 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   list(
     C = create_matrix_covfunc(U, V, K, t_grid, sig2),
     W = NULL,
+    temporal_fit = Ksig2,
+    raw = list(
+      Gamma_U = Gamma_U,
+      Gamma_V = Gamma_V,
+      U_unprojected = U_unprojected,
+      V_unprojected = V_unprojected
+    )
+  )
+}
+
+.make_weight_folds <- function(n, nfolds, fold_id = NULL) {
+  nfolds_numeric <- as.numeric(nfolds)
+  if (length(nfolds_numeric) != 1L || !is.finite(nfolds_numeric) ||
+      nfolds_numeric != as.integer(nfolds_numeric)) {
+    stop("nfolds must be one finite integer.")
+  }
+  nfolds <- as.integer(nfolds_numeric)
+  if (nfolds < 1L || nfolds > n) {
+    stop("nfolds must lie between 1 and the number of subjects.")
+  }
+
+  if (is.null(fold_id)) {
+    return(rep(seq_len(nfolds), length.out = n))
+  }
+  if (length(fold_id) != n || anyNA(fold_id)) {
+    stop("fold_id must contain one non-missing value per subject.")
+  }
+  fold_id <- match(fold_id, unique(fold_id))
+  if (length(unique(fold_id)) != nfolds) {
+    stop("fold_id must contain exactly nfolds distinct folds.")
+  }
+  as.integer(fold_id)
+}
+
+.compute_crossfit_weights <- function(
+  data,
+  fold_id,
+  wScheme,
+  noise = FALSE,
+  nbasis = "theory",
+  ndeg = 3,
+  opwIter = 3,
+  temporal_method = c("two_step", "joint")
+) {
+  stopifnot(inherits(data, "matfdata.irreg"))
+  temporal_method <- match.arg(temporal_method)
+  wScheme <- match_weight_scheme(
+    wScheme,
+    setdiff(WEIGHT_SCHEMES, "identity")
+  )
+  n <- count_subj(data)
+  p <- data$vdim[1]
+  q <- data$vdim[2]
+  fold_levels <- sort(unique(fold_id))
+
+  W_subject <- list(
+    U = list(W2 = vector("list", n), W3 = vector("list", n)),
+    V = list(W1 = vector("list", n), W3 = vector("list", n)),
+    K = list(W1 = vector("list", n), W2 = vector("list", n))
+  )
+  class(W_subject) <- c(
+    "crossfit_mode_weights", "mode_weights", wScheme
+  )
+  attr(W_subject, "fold_id") <- fold_id
+
+  beta_K <- numeric(n)
+  pilot_covariances <- vector("list", length(fold_levels))
+  training_subjects <- vector("list", length(fold_levels))
+  names(pilot_covariances) <- names(training_subjects) <- paste0(
+    "fold", fold_levels
+  )
+  U_tilde <- matrix(0, p, p)
+  V_tilde <- matrix(0, q, q)
+  K_tilde <- matrix(0, length(data$t_grid), length(data$t_grid))
+  sig2_tilde <- 0
+
+  for (fold_position in seq_along(fold_levels)) {
+    fold <- fold_levels[[fold_position]]
+    test_index <- which(fold_id == fold)
+    train_index <- which(fold_id != fold)
+    if (!length(train_index)) {
+      stop("Each cross-fitting fold must leave at least one training subject.")
+    }
+
+    pilot_fit <- .fit_matfcov_identity(
+      subset_subj(data, train_index),
+      noise = noise,
+      nbasis = nbasis,
+      ndeg = ndeg,
+      temporal_method = temporal_method
+    )
+    pilot <- pilot_fit$C
+    pilot_raw <- pilot_fit$raw
+    # Evaluation designs are safe to use: only their time locations enter.
+    # No held-out response contributes to these fold-specific weights.
+    LK_pilot <- lapply(
+      data$t_idx_list,
+      function(tid) pilot$K[tid, tid, drop = FALSE]
+    )
+    fold_weights <- compute_W(
+      pilot$U, pilot$V, LK_pilot, pilot$sig2,
+      wScheme = wScheme,
+      nIter.opt = opwIter
+    )
+
+    pilot_U_cal <- if (!is.null(pilot_raw$U_unprojected)) {
+      pilot_raw$U_unprojected
+    } else {
+      pilot$U
+    }
+    pilot_V_cal <- if (!is.null(pilot_raw$V_unprojected)) {
+      pilot_raw$V_unprojected
+    } else {
+      pilot$V
+    }
+
+    W1K <- get_W(fold_weights, 1L, "K")
+    W2K <- get_W(fold_weights, 2L, "K")
+    fold_beta_K <-
+      (tr(pilot_U_cal, W1K) / p) * (tr(pilot_V_cal, W2K) / q)
+    if (!is.finite(fold_beta_K) || fold_beta_K <= 0) {
+      stop("Cross-fitted pilot produced a non-positive temporal signal scale.")
+    }
+
+    W2U <- get_W(fold_weights, 2L, "U")
+    W3U <- get_W(fold_weights, 3L, "U")
+    W1V <- get_W(fold_weights, 1L, "V")
+    W3V <- get_W(fold_weights, 3L, "V")
+    for (i in test_index) {
+      W_subject$K$W1[[i]] <- W1K
+      W_subject$K$W2[[i]] <- W2K
+      beta_K[[i]] <- fold_beta_K
+      W_subject$U$W2[[i]] <- W2U
+      W_subject$U$W3[[i]] <- W3U[[i]]
+      W_subject$V$W1[[i]] <- W1V
+      W_subject$V$W3[[i]] <- W3V[[i]]
+    }
+
+    pilot_covariances[[fold_position]] <- pilot
+    training_subjects[[fold_position]] <- train_index
+    fold_fraction <- length(test_index) / n
+    U_tilde <- U_tilde + fold_fraction * pilot$U
+    V_tilde <- V_tilde + fold_fraction * pilot$V
+    K_tilde <- K_tilde + fold_fraction * pilot$K
+    sig2_tilde <- sig2_tilde + fold_fraction * pilot$sig2
+  }
+
+  list(
+    W = W_subject,
+    beta_K = beta_K,
+    pilot = pilot_covariances,
+    training_subjects = training_subjects,
+    U_tilde = U_tilde,
+    V_tilde = V_tilde,
+    K_tilde = K_tilde,
+    sig2_tilde = sig2_tilde
+  )
+}
+
+.fit_matfcov_crossfit <- function(
+  data,
+  fold_id,
+  wScheme,
+  noise = FALSE,
+  nbasis = "theory",
+  ndeg = 3,
+  opwIter = 3,
+  temporal_method = c("two_step", "joint")
+) {
+  stopifnot(inherits(data, "matfdata.irreg"))
+  temporal_method <- match.arg(temporal_method)
+  p <- data$vdim[1]
+  q <- data$vdim[2]
+  t_grid <- data$t_grid
+  n <- count_subj(data)
+  Nis <- vapply(data$t_idx_list, length, integer(1))
+  Nbar <- mean(Nis)
+
+  crossfit <- .compute_crossfit_weights(
+    data,
+    fold_id = fold_id,
+    wScheme = wScheme,
+    noise = noise,
+    nbasis = nbasis,
+    ndeg = ndeg,
+    opwIter = opwIter,
+    temporal_method = temporal_method
+  )
+  W <- crossfit$W
+
+  Ksig2 <- .estimate_K_crossfit_irreg(
+    data,
+    W1 = get_W(W, 1L, "K"),
+    W2 = get_W(W, 2L, "K"),
+    beta = crossfit$beta_K,
+    noise = noise,
+    nbasis = nbasis,
+    ndeg = ndeg,
+    temporal_method = temporal_method,
+    U_tilde = crossfit$U_tilde,
+    V_tilde = crossfit$V_tilde
+  )
+  K_uncalibrated <- psd_project(sym(Ksig2$K))
+  K_scale <- fun2dInprod(
+    K_uncalibrated, crossfit$K_tilde, t_grid
+  ) / fun2dNorm2(K_uncalibrated, t_grid)
+  if (!is.finite(K_scale) || K_scale <= 0) {
+    stop("Fold-pilot temporal calibration produced a non-positive scale.")
+  }
+  K <- K_scale * K_uncalibrated
+  # The fold identity fits provide a stable cross-fitted scalar noise estimate.
+  # The mixed refined-off-diagonal/identity-diagonal smoother is retained for
+  # K shape, but its nugget is sensitive to the pre-calibration K scale.
+  sig2 <- if (noise) max(0, crossfit$sig2_tilde) else 0
+  Ksig2$crossfit_scale <- K_scale
+  Ksig2$sig2_uncalibrated <- Ksig2$sig2
+  Ksig2$sig2 <- sig2
+  Ksig2$K_calibrated <- K
+  if (temporal_method == "joint") Ksig2$G <- diag(K) + sig2
+
+  W2U <- get_W(W, 2L, "U")
+  W3U <- get_W(W, 3L, "U")
+  U_hat <- sym(estimate_U(data, W2U, W3U))
+  noise_scale_U <- mean(vapply(seq_len(n), function(i) {
+    tr(W2U[[i]]) * tr(W3U[[i]]) / (q * Nbar)
+  }, numeric(1)))
+  Gamma_U <- U_hat - diag(sig2 * noise_scale_U, p)
+  U_unprojected <- trace_normalize(Gamma_U, p)
+  U <- normalize_psd_trace(Gamma_U, p)
+
+  W1V <- get_W(W, 1L, "V")
+  W3V <- get_W(W, 3L, "V")
+  V_hat <- sym(estimate_V(data, W1V, W3V))
+  noise_scale_V <- mean(vapply(seq_len(n), function(i) {
+    tr(W1V[[i]]) * tr(W3V[[i]]) / (p * Nbar)
+  }, numeric(1)))
+  Gamma_V <- V_hat - diag(sig2 * noise_scale_V, q)
+  V_unprojected <- trace_normalize(Gamma_V, q)
+  V <- normalize_psd_trace(Gamma_V, q)
+
+  list(
+    C = create_matrix_covfunc(U, V, K, t_grid, sig2),
+    W = W,
+    pilot = crossfit$pilot,
+    beta_K = crossfit$beta_K,
+    fold_id = fold_id,
+    training_subjects = crossfit$training_subjects,
     temporal_fit = Ksig2,
     raw = list(
       Gamma_U = Gamma_U,
@@ -1142,12 +1490,42 @@ fit_matfcov <- function(
   nbasis = "theory",
   ndeg = 3,
   opwIter = 3,
-  temporal_method = c("two_step", "joint")
+  temporal_method = c("two_step", "joint"),
+  nfolds = 10L,
+  fold_id = NULL
 ) {
   wScheme <- match_weight_scheme(wScheme)
   temporal_method <- match.arg(temporal_method)
   stopifnot(inherits(data, "matfdata.irreg"))
 
+  if (wScheme == "identity") {
+    return(.fit_matfcov_identity(
+      data,
+      noise = noise,
+      nbasis = nbasis,
+      ndeg = ndeg,
+      temporal_method = temporal_method
+    ))
+  }
+
+  if (wScheme == "gaussian_refined") {
+    if (missing(nfolds)) nfolds <- min(as.integer(nfolds), count_subj(data))
+    fold_id <- .make_weight_folds(count_subj(data), nfolds, fold_id)
+    if (nfolds > 1L) {
+      return(.fit_matfcov_crossfit(
+        data,
+        fold_id = fold_id,
+        wScheme = wScheme,
+        noise = noise,
+        nbasis = nbasis,
+        ndeg = ndeg,
+        opwIter = opwIter,
+        temporal_method = temporal_method
+      ))
+    }
+  }
+
+  # Gaussian nfolds = 1 and heuristic weights use the legacy same-sample fit.
   pilot_fit <- .fit_matfcov_identity(
     data,
     noise = noise,
@@ -1155,8 +1533,6 @@ fit_matfcov <- function(
     ndeg = ndeg,
     temporal_method = temporal_method
   )
-  if (wScheme == "identity") return(pilot_fit)
-
   .fit_matfcov_from_pilot(
     data,
     pilot = pilot_fit$C,

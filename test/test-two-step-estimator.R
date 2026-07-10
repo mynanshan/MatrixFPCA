@@ -23,7 +23,9 @@ stopifnot(
   identical(dim(generated$scores), c(20L, 6L, 5L, 3L)),
   abs(mean(generated$subject_amplitude^2) - 1) < 0.75,
   !"maxIter" %in% names(formals(fit_matfcov)),
-  "temporal_method" %in% names(formals(fit_matfcov))
+  "temporal_method" %in% names(formals(fit_matfcov)),
+  "nfolds" %in% names(formals(fit_matfcov)),
+  identical(eval(formals(fit_matfcov)$nfolds), 10L)
 )
 
 fit_identity <- fit_matfcov(
@@ -37,7 +39,16 @@ fit_refined <- fit_matfcov(
   wScheme = "gaussian_refined",
   noise = TRUE,
   nbasis = "theory",
-  opwIter = 2
+  opwIter = 2,
+  nfolds = 2
+)
+fit_refined_legacy <- fit_matfcov(
+  generated$data,
+  wScheme = "gaussian_refined",
+  noise = TRUE,
+  nbasis = "theory",
+  opwIter = 2,
+  nfolds = 1
 )
 fit_joint_identity <- fit_matfcov(
   generated$data,
@@ -52,10 +63,17 @@ fit_joint_refined <- fit_matfcov(
   noise = TRUE,
   nbasis = "theory",
   opwIter = 2,
-  temporal_method = "joint"
+  temporal_method = "joint",
+  nfolds = 2
 )
 
-for (fit in list(fit_identity, fit_refined, fit_joint_identity, fit_joint_refined)) {
+for (fit in list(
+  fit_identity,
+  fit_refined,
+  fit_refined_legacy,
+  fit_joint_identity,
+  fit_joint_refined
+)) {
   covariance <- fit$C
   stopifnot(
     abs(tr(covariance$U) - 6) < 1e-8,
@@ -78,7 +96,63 @@ stopifnot(
   is.null(fit_identity$W),
   inherits(fit_refined$W, "mode_weights"),
   inherits(fit_refined$W, "gaussian_refined"),
-  is(fit_refined$pilot, "matfcov")
+  inherits(fit_refined$W, "crossfit_mode_weights"),
+  length(fit_refined$pilot) == 2L,
+  length(fit_refined$beta_K) == 20L,
+  all(is.finite(fit_refined$beta_K)),
+  fit_refined$temporal_fit$crossfit_scale > 0,
+  length(fit_refined$fold_id) == 20L,
+  length(unique(fit_refined$fold_id)) == 2L,
+  all(vapply(get_W(fit_refined$W, 1L, "K"), is.matrix, logical(1))),
+  all(vapply(get_W(fit_refined$W, 2L, "K"), is.matrix, logical(1))),
+  all(vapply(get_W(fit_refined$W, 3L, "U"), is.matrix, logical(1))),
+  all(vapply(get_W(fit_refined$W, 3L, "V"), is.matrix, logical(1))),
+  !inherits(fit_refined_legacy$W, "crossfit_mode_weights"),
+  is(fit_refined_legacy$pilot, "matfcov")
+)
+
+for (fold in sort(unique(fit_refined$fold_id))) {
+  held_out <- which(fit_refined$fold_id == fold)
+  training <- fit_refined$training_subjects[[paste0("fold", fold)]]
+  stopifnot(!length(intersect(held_out, training)))
+}
+
+# A held-out response must not affect any weight subsequently applied to it.
+modified_data <- generated$data
+modified_X1 <- get_subj_tnsr(modified_data, 1L)
+modified_data$X_list[[1L]] <- rTensor::as.tensor(modified_X1@data * 100)
+modified_crossfit <- .compute_crossfit_weights(
+  modified_data,
+  fold_id = fit_refined$fold_id,
+  wScheme = "gaussian_refined",
+  noise = TRUE,
+  nbasis = "theory",
+  opwIter = 2,
+  temporal_method = "two_step"
+)
+for (target_mode in list(
+  c("K", "W1"), c("K", "W2"),
+  c("U", "W2"), c("U", "W3"),
+  c("V", "W1"), c("V", "W3")
+)) {
+  target <- target_mode[[1L]]
+  mode <- target_mode[[2L]]
+  stopifnot(isTRUE(all.equal(
+    fit_refined$W[[target]][[mode]][[1L]],
+    modified_crossfit$W[[target]][[mode]][[1L]]
+  )))
+}
+
+stopifnot(
+  identical(.make_weight_folds(6L, 3L), c(1L, 2L, 3L, 1L, 2L, 3L)),
+  identical(
+    .make_weight_folds(6L, 2L, c("a", "a", "b", "b", "a", "b")),
+    c(1L, 1L, 2L, 2L, 1L, 2L)
+  ),
+  inherits(
+    try(.make_weight_folds(4L, 5L), silent = TRUE),
+    "try-error"
+  )
 )
 
 # At exactly zero noise, the Gaussian-refined formula must reduce to the

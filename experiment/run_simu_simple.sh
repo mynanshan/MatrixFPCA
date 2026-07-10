@@ -64,16 +64,17 @@ run_array_task() {
     exit 1
   fi
 
-  local config_id seed n p sigma distribution dependence dep_param nbasis
+  local config_id seed n p sigma distribution dependence dep_param nbasis weight_folds
   local eigensystem eigvec_set eigval_set rank_time
   IFS=$'\t' read -r \
     config_id seed n p sigma distribution dependence dep_param \
-    nbasis eigensystem eigvec_set eigval_set rank_time <<< "${row}"
+    nbasis weight_folds eigensystem eigvec_set eigval_set rank_time <<< "${row}"
 
   echo "Running config=${config_id}, seed=${seed}"
   echo "n=${n}, p=q=${p}, sigma=${sigma}, distribution=${distribution}"
   echo "dependence=${dependence}, dependence_param=${dep_param}"
   echo "nbasis=${nbasis}"
+  echo "weight_folds=${weight_folds}"
   echo "eigensystem=${eigensystem}, eigvec_set=${eigvec_set}, eigval_set=${eigval_set}, rank_time=${rank_time}"
 
   cd "${ROOT_DIR}"
@@ -100,6 +101,7 @@ run_array_task() {
     --rank_col 0
     --rank_time "${rank_time}"
     --nbasis "${nbasis}"
+    --weight_folds "${weight_folds}"
     --eigset "${eigvec_set}"
     --eigvalset "${eigval_set}"
     --eigensystem "${eigensystem}"
@@ -130,6 +132,7 @@ max_parallel="${3:-100}"
 dry_run=0
 eigensystem_arg="${MATFPCA_EIGENSYSTEM:-legacy}"
 nbasis_arg="${MATFPCA_NBASIS:-25}"
+weight_folds_arg="${MATFPCA_WEIGHT_FOLDS:-10}"
 
 shift_count=0
 if (($# >= 1)); then shift_count=1; fi
@@ -159,6 +162,14 @@ while (($#)); do
       nbasis_arg="${1#*=}"
       shift
       ;;
+    --weight-folds)
+      weight_folds_arg="${2:?--weight-folds requires a value}"
+      shift 2
+      ;;
+    --weight-folds=*)
+      weight_folds_arg="${1#*=}"
+      shift
+      ;;
     *)
       echo "Unknown option: $1" >&2
       exit 2
@@ -184,6 +195,10 @@ if (( min_seed > max_seed )); then
 fi
 if ! [[ "${nbasis_arg}" =~ ^[0-9]+$ ]]; then
   echo "nbasis must be a nonnegative integer" >&2
+  exit 2
+fi
+if ! [[ "${weight_folds_arg}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "weight-folds must be a positive integer" >&2
   exit 2
 fi
 
@@ -299,7 +314,7 @@ init_manifest() {
   local manifest="${MANIFEST_DIR}/simu_simple_${timestamp}_s${min_seed}-${max_seed}_${class}.tsv"
   manifest_by_class["${class}"]="${manifest}"
   class_task_count["${class}"]=0
-  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\tnbasis\teigensystem\teigvec_set\teigval_set\trank_time\n" \
+  printf "config_id\tseed\tn\tp\tsigma\tdistribution\tdependence\tdependence_param\tnbasis\tweight_folds\teigensystem\teigvec_set\teigval_set\trank_time\n" \
     > "${manifest}"
 }
 
@@ -320,7 +335,7 @@ add_config() {
     eigvec_set="$(eigvec_set_for_eigensystem "${eigensystem}")"
     eigval_set="$(eigval_set_for_eigensystem "${eigensystem}")"
     rank_time="$(rank_time_for_eigensystem "${eigensystem}")"
-    key="${n}|${p}|${sigma}|${distribution}|${dependence}|${dep_param}|${nbasis_arg}|${eigensystem}"
+    key="${n}|${p}|${sigma}|${distribution}|${dependence}|${dep_param}|${nbasis_arg}|${weight_folds_arg}|${eigensystem}"
 
     if [[ -n "${seen_configs[${key}]:-}" ]]; then
       continue
@@ -334,11 +349,11 @@ add_config() {
 
     local seed
     for ((seed = min_seed; seed <= max_seed; seed++)); do
-      printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+      printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "${config_count}" "${seed}" \
         "${n}" "${p}" "${sigma}" "${distribution}" \
         "${dependence}" "${dep_param}" \
-        "${nbasis_arg}" \
+        "${nbasis_arg}" "${weight_folds_arg}" \
         "${eigensystem}" "${eigvec_set}" "${eigval_set}" "${rank_time}" >> "${manifest}"
     done
     class_task_count["${class}"]=$((class_task_count["${class}"] + seed_count))
@@ -350,20 +365,20 @@ add_config() {
 # dependence-by-dimension block, which checks whether spatial averaging is lost.
 
 # Subject-number series.
-for n in 25 50 100; do
-  add_config "${n}" 30 0.5 normal independent 0
+for n in 25 50 75 100; do
+  add_config "${n}" 30 0.1 normal independent 0
 done
 
 # Primary study: fully cross spatial dimension and marginal score distribution
 # under independent FPC scores.
 for p in "${DIMENSIONS[@]}"; do
   for distribution in "${DISTRIBUTIONS[@]}"; do
-    add_config 50 "${p}" 0.5 "${distribution}" independent 0
+    add_config 50 "${p}" 0.1 "${distribution}" independent 0
   done
 done
 
 # Noise series.
-for sigma in 0.1 0.5 1; do
+for sigma in 0.1 0.3 0.5; do
   add_config 50 30 "${sigma}" normal independent 0
 done
 
@@ -373,9 +388,9 @@ done
 # heavy_amplitude: Pareto A^2 with index 1.5, finite variance of scores but
 #                  infinite fourth moments; this intentionally violates theory.
 for p in "${DIMENSIONS[@]}"; do
-  add_config 50 "${p}" 0.5 normal common_amplitude 1
-  add_config 50 "${p}" 0.5 normal common_signed 0
-  add_config 50 "${p}" 0.5 normal heavy_amplitude 1.5
+  add_config 50 "${p}" 0.1 normal common_amplitude 1
+  add_config 50 "${p}" 0.1 normal common_signed 0
+  add_config 50 "${p}" 0.1 normal heavy_amplitude 1.5
 done
 
 task_count=$((config_count * seed_count))
@@ -383,6 +398,7 @@ echo "Configurations: ${config_count}"
 echo "Eigensystem argument: ${eigensystem_arg}"
 echo "Eigensystems: ${ACTIVE_EIGENSYSTEMS[*]}"
 echo "Temporal marginal basis dimension: ${nbasis_arg} (0 means automatic theory rule)"
+echo "Refined-weight cross-fitting folds: ${weight_folds_arg}"
 echo "Seed range: ${min_seed}-${max_seed} (${seed_count} seeds per configuration)"
 echo "Array tasks: ${task_count}"
 for class in "${RESOURCE_CLASSES[@]}"; do
