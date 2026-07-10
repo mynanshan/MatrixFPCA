@@ -31,15 +31,15 @@ parser$add_argument("-s2", "--s_obs_max",
   help = "Max sampling ratio, 1 unit for 0.05."
 )
 parser$add_argument("-p", "--d_row",
-  type = "integer", default = 30,
+  type = "integer", default = 50,
   help = "Dimension of rows"
 )
 parser$add_argument("-q", "--d_col",
-  type = "integer", default = 30,
+  type = "integer", default = 50,
   help = "Dimension of columns"
 )
 parser$add_argument("-sig", "--noise_lvl",
-  type = "numeric", default = 0.1,
+  type = "numeric", default = 0.3,
   help = "Noise level sigma"
 )
 parser$add_argument("-rr", "--rank_row",
