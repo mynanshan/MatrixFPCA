@@ -31,11 +31,11 @@ parser$add_argument("-s2", "--s_obs_max",
   help = "Max sampling ratio, 1 unit for 0.05."
 )
 parser$add_argument("-p", "--d_row",
-  type = "integer", default = 100,
+  type = "integer", default = 30,
   help = "Dimension of rows"
 )
 parser$add_argument("-q", "--d_col",
-  type = "integer", default = 100,
+  type = "integer", default = 30,
   help = "Dimension of columns"
 )
 parser$add_argument("-sig", "--noise_lvl",
@@ -92,6 +92,11 @@ parser$add_argument("-dpar", "--dependence_param",
     "Pareto tail index for heavy_amplitude."
   )
 )
+parser$add_argument("-tm", "--temporal_method",
+  type = "character", default = "two_step",
+  choices = c("two_step", "joint"),
+  help = "Method for temporal covariance estimation."
+)
 parser$add_argument("--seed",
   type = "integer", default = -1,
   help = "The base seed"
@@ -99,6 +104,10 @@ parser$add_argument("--seed",
 parser$add_argument("--save",
   type = "integer", default = ifelse(interactive(), 0, 1),
   help = "Whether to save the results"
+)
+parser$add_argument("--plot",
+  type = "integer", default = ifelse(interactive(), 0, 1),
+  help = "Whether to plot the results"
 )
 parser$add_argument("--results_dir",
   type = "character", default = file.path("experiment", "results"),
@@ -148,17 +157,21 @@ dependence_param <- args[["dependence_param"]]
 if (score_dependence %in% c("independent", "common_signed")) {
   dependence_param <- 0
 }
+temporal_method_default <- args[["temporal_method"]]
 seed <- args[["seed"]]
 seed <- ifelse(seed < 0, ceiling(runif(1)*9999), seed)
 ifsave <- as.logical(args[["save"]])
+ifplot <- as.logical(args[["plot"]])
 results_dir <- args[["results_dir"]]
 
 manual_mode <- as.logical(args$manual)
 
 if (manual_mode) {
- # scores_distr <- "beta32"
+  seed <- 1
+  # scores_distr <- "beta32"
   # score_dependence <- "common_signed"
   dependence_param <- 0
+  temporal_method_default <- "two_step"
 }
 
 cat(
@@ -250,30 +263,16 @@ evaluate_covariance_fit <- function(fit, truth) {
   estimate <- fit$C
   sseU <- matFNorm2(estimate$U - truth$U)
   sseV <- matFNorm2(estimate$V - truth$V)
-  normK <- fun2dNorm2(truth$K, truth$t_grid)
   iseK <- fun2dNorm2(estimate$K - truth$K, truth$t_grid)
-  true_trace_K <- trapz_average(truth$t_grid, diag(truth$K)) *
-    diff(range(truth$t_grid))
-  estimate_trace_K <- trapz_average(truth$t_grid, diag(estimate$K)) *
-    diff(range(truth$t_grid))
-  if (is.finite(estimate_trace_K) &&
-      abs(estimate_trace_K) > 10 * .Machine$double.eps) {
-    Kc <- estimate$K * (true_trace_K / estimate_trace_K)
-    iseKc <- fun2dNorm2(Kc - truth$K, truth$t_grid)
-  } else {
-    iseKc <- NA_real_
-  }
   siseC <- matfcovDiffNorm2(estimate, truth)
   out <- c(
     sseU = sseU,
     sseV = sseV,
     iseK = iseK,
-    iseKc = iseKc,
     siseC = siseC,
     relsseU = sseU / matFNorm2(truth$U),
     relsseV = sseV / matFNorm2(truth$V),
-    reliseK = iseK / normK,
-    reliseKc = iseKc / normK,
+    reliseK = iseK / fun2dNorm2(truth$K, truth$t_grid),
     relsiseC = siseC / matfcovNorm2(truth)
   )
   gamma_metrics <- c(
@@ -331,7 +330,8 @@ fit_results <- lapply(weight_schemes, function(scheme) {
       wScheme = scheme,
       noise = estimate_noise,
       nbasis = nbasis,
-      opwIter = 3
+      opwIter = 3,
+      temporal_method = temporal_method_default
     )
   })
   runtime <- unname(fit_timing[["elapsed"]])
@@ -345,7 +345,6 @@ fit_results <- lapply(weight_schemes, function(scheme) {
     "Rel. SSE (U): ", metrics[["relsseU"]], "\n",
     "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
     "Rel. ISE (K): ", metrics[["reliseK"]], "\n",
-    "Rel. ISE (K, trace-corrected): ", metrics[["reliseKc"]], "\n",
     "Rel. SISE (C): ", metrics[["relsiseC"]], "\n",
     "Rel. SSE (raw Gamma_U): ", metrics[["relsseGammaU"]], "\n",
     "Rel. SSE (raw Gamma_V): ", metrics[["relsseGammaV"]], "\n",
@@ -378,7 +377,7 @@ plot_covariance_fit <- function(cov_hat, cov_true, scheme) {
   )
 }
 
-if (interactive()) {
+if (interactive() && ifplot) {
   for (scheme in weight_schemes) {
     plot_covariance_fit(fit_results[[scheme]]$fit$C, cov_true, scheme)
   }
@@ -479,8 +478,8 @@ if (ifsave) {
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
     "s1", "s2", "nt", "nbasis", "rank_row", "rank_col", "rank_time",
     "eigensystem", "eigvec_set", "eigval_set",
-    "sseU", "sseV", "iseK", "iseKc", "siseC",
-    "relsseU", "relsseV", "reliseK", "reliseKc", "relsiseC",
+    "sseU", "sseV", "iseK", "siseC",
+    "relsseU", "relsseV", "reliseK", "relsiseC",
     "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
     "mseX", "relmseX", "runtime"
   )
@@ -501,12 +500,10 @@ if (ifsave) {
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),
       formatter(metrics[["iseK"]]),
-      formatter(metrics[["iseKc"]]),
       formatter(metrics[["siseC"]]),
       formatter(metrics[["relsseU"]]),
       formatter(metrics[["relsseV"]]),
       formatter(metrics[["reliseK"]]),
-      formatter(metrics[["reliseKc"]]),
       formatter(metrics[["relsiseC"]]),
       formatter(metrics[["sseGammaU"]]),
       formatter(metrics[["sseGammaV"]]),
