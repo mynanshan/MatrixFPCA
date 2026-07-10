@@ -492,17 +492,15 @@ distribution_data <- plot_data[
 distribution_plot <- ggplot(
   distribution_data,
   aes(
-    distr_label, mean_error, color = weight_label, shape = weight_label,
-    group = weight_label
+    distr_label, mean_error, fill = weight_label
   )
 ) +
-  geom_line() +
-  geom_point(size = 2) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
   labs(
     x = "FPC-score distribution", y = "Mean relative error",
-    color = "Weighting", shape = "Weighting"
+    fill = "Weighting"
   ) +
   theme_paper
 
