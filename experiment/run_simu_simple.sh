@@ -11,6 +11,7 @@ fi
 #   experiment/run_simu_simple.sh 100 1 100
 #   experiment/run_simu_simple.sh 200 101 100 --dry-run
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
+#   experiment/run_simu_simple.sh 50 1 100 --eigensystem ar1
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
 #   experiment/run_simu_simple.sh 50 1 100 --nbasis 25
 #
@@ -22,13 +23,11 @@ fi
 # caps numerical backends to the CPUs requested by each resource class.
 #
 # Eigensystem choices:
-#   legacy          current runner setting: smooth spatial Fourier basis,
-#                   low-rank smooth temporal covariance.
-#   complex-lowrank random spatial eigenvectors and low-rank smooth temporal
-#                   covariance, matching the generator's original defaults.
+#   ar1             default ordered spatial coordinates with AR(1)
+#                   correlation 0.7 and low-rank smooth temporal covariance.
 #   smooth-highrank smooth spatial Fourier basis with faster spatial
 #                   eigendecay and a higher-rank temporal covariance.
-#   both            run complex-lowrank and smooth-highrank for each setting.
+#   both            run ar1 and smooth-highrank for each setting.
 #
 # By default the runner uses a fixed marginal temporal basis dimension of 25.
 # Set MATFPCA_NBASIS=0 or pass --nbasis 0 to use the theory-guided automatic
@@ -130,7 +129,7 @@ max_seed="${1:-50}"
 min_seed="${2:-1}"
 max_parallel="${3:-100}"
 dry_run=0
-eigensystem_arg="${MATFPCA_EIGENSYSTEM:-legacy}"
+eigensystem_arg="${MATFPCA_EIGENSYSTEM:-ar1}"
 nbasis_arg="${MATFPCA_NBASIS:-25}"
 weight_folds_arg="${MATFPCA_WEIGHT_FOLDS:-10}"
 
@@ -204,21 +203,18 @@ fi
 
 eigensystems_for_run() {
   case "$1" in
-    legacy)
-      printf "legacy\n"
-      ;;
-    complex-lowrank)
-      printf "complex-lowrank\n"
-      ;;
     smooth-highrank)
       printf "smooth-highrank\n"
       ;;
+    ar1)
+      printf "ar1\n"
+      ;;
     both)
-      printf "complex-lowrank\nsmooth-highrank\n"
+      printf "ar1\nsmooth-highrank\n"
       ;;
     *)
       echo "Unknown eigensystem: $1" >&2
-      echo "Valid choices are: legacy, complex-lowrank, smooth-highrank, both" >&2
+      echo "Valid choices are: ar1, smooth-highrank, both" >&2
       exit 2
       ;;
   esac
@@ -226,27 +222,24 @@ eigensystems_for_run() {
 
 eigvec_set_for_eigensystem() {
   case "$1" in
-    legacy) echo 2 ;;
-    complex-lowrank) echo 1 ;;
     smooth-highrank) echo 2 ;;
+    ar1) echo 2 ;;
     *) echo "unknown eigensystem: $1" >&2; exit 2 ;;
   esac
 }
 
 eigval_set_for_eigensystem() {
   case "$1" in
-    legacy) echo 1 ;;
-    complex-lowrank) echo 1 ;;
     smooth-highrank) echo 2 ;;
+    ar1) echo 1 ;;
     *) echo "unknown eigensystem: $1" >&2; exit 2 ;;
   esac
 }
 
 rank_time_for_eigensystem() {
   case "$1" in
-    legacy) echo 5 ;;
-    complex-lowrank) echo 5 ;;
     smooth-highrank) echo 9 ;;
+    ar1) echo 5 ;;
     *) echo "unknown eigensystem: $1" >&2; exit 2 ;;
   esac
 }

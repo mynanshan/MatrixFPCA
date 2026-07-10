@@ -67,8 +67,8 @@ parser$add_argument("-eval", "--eigvalset",
   help = "Which eigenvalue decay setting."
 )
 parser$add_argument("--eigensystem",
-  type = "character", default = "custom",
-  help = "Label for the data-generating eigensystem."
+  type = "character", default = "ar1",
+  help = "Data-generating eigensystem label; 'ar1' selects AR(1) spatial covariance."
 )
 parser$add_argument("-scd", "--scores_distr",
   type = "character", default = "normal",
@@ -110,7 +110,7 @@ parser$add_argument("--save",
   help = "Whether to save the results"
 )
 parser$add_argument("--plot",
-  type = "integer", default = ifelse(interactive(), 0, 1),
+  type = "integer", default = ifelse(interactive(), 1, 0),
   help = "Whether to plot the results"
 )
 parser$add_argument("--results_dir",
@@ -155,6 +155,7 @@ nbasis_label <- as.character(nbasis)
 eigset <- args[["eigset"]]
 eigvalset <- args[["eigvalset"]]
 eigensystem <- args[["eigensystem"]]
+spatial_model <- if (eigensystem == "ar1") "ar1" else "spectral"
 scores_distr <- args[["scores_distr"]]
 score_dependence <- args[["score_dependence"]]
 dependence_param <- args[["dependence_param"]]
@@ -197,6 +198,7 @@ cat(
   "npc_col=", npc_col, "\n",
   "npc_time=", npc_time, "\n",
   "eigensystem=", eigensystem, "\n",
+  "spatial_model=", spatial_model, "\n",
   "eigvecSet=", eigset, "\n",
   "eigvalSet=", eigvalset, "\n",
   "scores_distr=", scores_distr, "\n",
@@ -244,6 +246,7 @@ genData <- gen_data_simple(
   sig = sig,
   eigvecSet = eigset,
   eigvalSet = eigvalset,
+  spatial_model = spatial_model,
   scores_distr = scores_distr,
   score_dependence = score_dependence,
   dependence_param = dependence_param

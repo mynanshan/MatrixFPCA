@@ -15,6 +15,7 @@ requested_plot_weight_folds <- if (length(args) >= 5L) {
 } else {
   NA_integer_
 }
+requested_plot_eigensystem <- if (length(args) >= 6L) args[[6L]] else NA_character_
 manifest_dirs <- c(
   file.path(results_dir, "manifests"),
   file.path("logs", "manifests")
@@ -240,7 +241,7 @@ default_expected_eigensystems <- unique(res[
 ])
 if (!nrow(default_expected_eigensystems)) {
   default_expected_eigensystems <- data.table(
-    eigensystem = "legacy",
+    eigensystem = "ar1",
     eigvec_set = 2,
     eigval_set = 1,
     rank_time = 5
@@ -399,8 +400,7 @@ plot_data <- melt(
   summary_long,
   id.vars = setting_columns,
   measure.vars = c(
-    "relsseU_mean", "relsseV_mean", "reliseK_mean", "reliseKc_mean",
-    "relsiseC_mean"
+    "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
   ),
   variable.name = "metric",
   value.name = "mean_error"
@@ -410,10 +410,9 @@ plot_data[
   metric := factor(
     metric,
     levels = c(
-      "relsseU_mean", "relsseV_mean", "reliseK_mean", "reliseKc_mean",
-      "relsiseC_mean"
+      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
     ),
-    labels = c("U", "V", "K", "K trace-corrected", "Full covariance")
+    labels = c("U", "V", "K", "Full covariance")
   )
 ]
 plot_data[
@@ -468,18 +467,30 @@ if (!plot_weight_folds %in% available_weight_folds) {
   plot_weight_folds <- available_weight_folds[[1L]]
 }
 weight_folds_title <- paste("refined-weight folds =", plot_weight_folds)
+available_eigensystems <- sort(unique(res$eigensystem))
+plot_eigensystem <- requested_plot_eigensystem
+if (is.na(plot_eigensystem)) {
+  plot_eigensystem <- if ("ar1" %in% available_eigensystems) "ar1" else
+    available_eigensystems[[1L]]
+}
+if (!plot_eigensystem %in% available_eigensystems) {
+  warning(
+    "Requested eigensystem = ", plot_eigensystem, " is absent; using ",
+    available_eigensystems[[1L]], "."
+  )
+  plot_eigensystem <- available_eigensystems[[1L]]
+}
+eigensystem_title <- paste("spatial eigensystem =", plot_eigensystem)
 
 dimension_metric_data <- melt(
   summary_long,
   id.vars = c(setting_columns, "n_rep"),
   measure.vars = list(
     mean_error = c(
-      "relsseU_mean", "relsseV_mean", "reliseK_mean", "reliseKc_mean",
-      "relsiseC_mean"
+      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
     ),
     sd_error = c(
-      "relsseU_sd", "relsseV_sd", "reliseK_sd", "reliseKc_sd",
-      "relsiseC_sd"
+      "relsseU_sd", "relsseV_sd", "reliseK_sd", "relsiseC_sd"
     )
   ),
   variable.name = "metric_index"
@@ -488,11 +499,10 @@ dimension_metric_data[
   ,
   metric := factor(
     metric_index,
-    levels = 1:5,
+    levels = 1:4,
     labels = c(
       "U relative Frobenius", "V relative Frobenius",
-      "K relative ISE", "K relative ISE, trace-corrected",
-      "Full covariance"
+      "K relative ISE", "Full covariance"
     )
   )
 ]
@@ -522,6 +532,7 @@ dimension_metric_data[
 
 dimension_data <- dimension_metric_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
     n == 50 & sig == 0.1 & dependence == "independent" &
     p %in% dimension_grid
 ]
@@ -547,6 +558,7 @@ dimension_plot <- ggplot(
       "Fixed: n = 50, sigma = 0.1, independent scores",
       nbasis_title,
       weight_folds_title,
+      eigensystem_title,
       sep = "\n"
     ),
     x = "Spatial dimension (p = q)", y = "Mean relative error",
@@ -556,6 +568,7 @@ dimension_plot <- ggplot(
 
 dependent_dimension_data <- dimension_metric_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
     n == 50 & sig == 0.1 & distr == "normal" &
     dependence != "independent" & p %in% dimension_grid &
     weight == "identity"
@@ -582,6 +595,7 @@ dependent_dimension_plot <- ggplot(
       "Fixed: n = 50, sigma = 0.1, Gaussian scores, identity weighting",
       nbasis_title,
       weight_folds_title,
+      eigensystem_title,
       sep = "\n"
     ),
     x = "Spatial dimension (p = q)", y = "Mean relative error",
@@ -591,6 +605,7 @@ dependent_dimension_plot <- ggplot(
 
 sample_size_data <- plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
     p == 30 & sig == 0.1 & distr == "normal" &
     dependence == "independent"
 ]
@@ -608,6 +623,7 @@ sample_size_plot <- ggplot(
       "Fixed: p = q = 30, sigma = 0.1, Gaussian scores, independent scores",
       nbasis_title,
       weight_folds_title,
+      eigensystem_title,
       sep = "\n"
     ),
     x = "Number of subjects", y = "Mean relative error",
@@ -617,6 +633,7 @@ sample_size_plot <- ggplot(
 
 noise_data <- plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
     n == 50 & p == 30 & distr == "normal" &
     dependence == "independent"
 ]
@@ -634,6 +651,7 @@ noise_plot <- ggplot(
       "Fixed: n = 50, p = q = 30, Gaussian scores, independent scores",
       nbasis_title,
       weight_folds_title,
+      eigensystem_title,
       sep = "\n"
     ),
     x = "Noise standard deviation", y = "Mean relative error",
@@ -643,6 +661,7 @@ noise_plot <- ggplot(
 
 distribution_data <- plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
     n == 50 & p == 30 & sig == 0.1 & dependence == "independent"
 ]
 distribution_plot <- ggplot(
@@ -660,6 +679,7 @@ distribution_plot <- ggplot(
       "Fixed: n = 50, p = q = 30, sigma = 0.1, independent scores",
       nbasis_title,
       weight_folds_title,
+      eigensystem_title,
       sep = "\n"
     ),
     x = "FPC-score distribution", y = "Mean relative error",

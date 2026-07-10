@@ -11,6 +11,7 @@ gen_data_simple <- function(
   sig = 0,
   eigvecSet = 1,
   eigvalSet = 1,
+  spatial_model = c("ar1", "spectral"),
   scores_distr = c("normal", "uniform", "beta32", "t5"),
   score_dependence = c(
     "independent",
@@ -20,6 +21,7 @@ gen_data_simple <- function(
   ),
   dependence_param = 1
 ) {
+  spatial_model <- match.arg(spatial_model)
   
   t_grid = seq(t_range[1], t_range[2], length.out=nt)
   
@@ -32,38 +34,59 @@ gen_data_simple <- function(
   # the covariance matrix is singular
   # then following procedure will be incorrect
   npc = npc_col * npc_row * npc_time
-  if (eigvecSet == 1) {
-    Phi = pracma::randortho(p)[,1:npc_row,drop=FALSE]
-    Psi = pracma::randortho(q)[,1:npc_col,drop=FALSE]
-  } else if (eigvecSet == 2) {
-    Phi = fda::fourier(
-      seq(0,1,length.out=p), nbasis = npc_row+1
-    )[,2:(npc_row+1)]
-    Psi = fda::fourier(
-      seq(0,1,length.out=q), nbasis = npc_col+1
-    )[,2:(npc_col+1)]
-    Phi = qr.Q(qr(Phi))
-    Psi = qr.Q(qr(Psi))
+  if (spatial_model == "ar1") {
+    ar1_eigensystem <- function(d, rank, rho = 0.7) {
+      covariance <- rho^abs(outer(seq_len(d), seq_len(d), "-"))
+      ee <- eigen(covariance, symmetric = TRUE)
+      list(
+        vectors = ee$vectors[, seq_len(rank), drop = FALSE],
+        values = ee$values[seq_len(rank)]
+      )
+    }
+    row_eig <- ar1_eigensystem(p, npc_row)
+    col_eig <- ar1_eigensystem(q, npc_col)
+    Phi <- row_eig$vectors
+    Psi <- col_eig$vectors
+    lam_phi <- row_eig$values
+    lam_psi <- col_eig$values
   } else {
-    stop("eigvecSet must be 1 or 2.")
+    if (eigvecSet == 1) {
+      Phi = pracma::randortho(p)[,1:npc_row,drop=FALSE]
+      Psi = pracma::randortho(q)[,1:npc_col,drop=FALSE]
+    } else if (eigvecSet == 2) {
+      Phi = fda::fourier(
+        seq(0,1,length.out=p), nbasis = npc_row+1
+      )[,2:(npc_row+1)]
+      Psi = fda::fourier(
+        seq(0,1,length.out=q), nbasis = npc_col+1
+      )[,2:(npc_col+1)]
+      Phi = qr.Q(qr(Phi))
+      Psi = qr.Q(qr(Psi))
+    } else {
+      stop("eigvecSet must be 1 or 2.")
+    }
   }
   theta_funcs = function(x, npc) fda::fourier(x, nbasis = npc)
   theta_mat = theta_funcs(t_grid, npc_time)
   
   # eigenvalues
-  if (eigvalSet == 1) {
-    lam_phi = seq(2, 0.2, length.out=npc_row)
-    lam_psi = seq(2, 0.2, length.out=npc_col)
-  } else if (eigvalSet == 2) {
-    lam_phi = 2 * (1:npc_row)^(-1.2)
-    lam_psi = 2 * (1:npc_col)^(-1.3)
-  } else {
-    stop("eigvalSet must be 1 or 2.")
+  if (spatial_model == "spectral") {
+    if (eigvalSet == 1) {
+      lam_phi = seq(2, 0.2, length.out=npc_row)
+      lam_psi = seq(2, 0.2, length.out=npc_col)
+    } else if (eigvalSet == 2) {
+      lam_phi = 2 * (1:npc_row)^(-1.2)
+      lam_psi = 2 * (1:npc_col)^(-1.3)
+    } else {
+      stop("eigvalSet must be 1 or 2.")
+    }
   }
   if (eigvalSet == 1) {
     lam_theta = 2 * (1:npc_time)^(-2.0)
   } else if (eigvalSet == 2) {
     lam_theta = 2 * (1:npc_time)^(-2.5)
+  } else {
+    stop("eigvalSet must be 1 or 2.")
   }
 
   scale_U <- sum(lam_phi) / p
@@ -196,6 +219,7 @@ gen_data_simple <- function(
     scores = scores,
     score_dependence = score_dependence,
     dependence_param = dependence_param,
+    spatial_model = spatial_model,
     subject_amplitude = A
   )
   
