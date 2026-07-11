@@ -150,11 +150,65 @@ stopifnot(
     fit_refined$C$sig2,
     fit_refined$temporal_fit$sig2
   )),
-  "nugget_multiplier" %in%
-    names(stats::coef(fit_refined$temporal_fit$fit$G)),
+  is.null(fit_identity$temporal_fit$fit$G),
+  is.null(fit_refined$temporal_fit$fit$G),
   "nugget_multiplier" %in%
     names(stats::coef(fit_joint_refined$temporal_fit$fit$K))
 )
+
+# The two-step estimator uses the manuscript's direct weighted average of
+# diagonal residuals and does not fit a separate diagonal smoother.
+identity_diagonal <- do.call(rbind, lapply(seq_len(count_subj(generated$data)), function(i) {
+  Xi <- get_subj_tnsr(generated$data, i)
+  tid <- generated$data$t_idx_list[[i]]
+  data.frame(
+    t = generated$data$t_grid[tid],
+    Kval = apply(Xi@data^2, 3L, sum) / prod(generated$data$vdim)
+  )
+}))
+identity_residual <- identity_diagonal$Kval - as.numeric(stats::predict(
+  fit_identity$temporal_fit$fit$K,
+  newdata = data.table::data.table(
+    t1 = identity_diagonal$t,
+    t2 = identity_diagonal$t
+  )
+))
+stopifnot(isTRUE(all.equal(
+  fit_identity$C$sig2,
+  max(0, mean(identity_residual)),
+  tolerance = 1e-10
+)))
+
+refined_diagonal <- do.call(rbind, lapply(seq_len(count_subj(generated$data)), function(i) {
+  Xi <- get_subj_tnsr(generated$data, i)
+  tid <- generated$data$t_idx_list[[i]]
+  data.frame(
+    t = generated$data$t_grid[tid],
+    Kval = diag(get_working_K(
+      Xi,
+      get_W(fit_refined$W, 1L, "K")[[i]],
+      get_W(fit_refined$W, 2L, "K")[[i]]
+    )) / (prod(generated$data$vdim) * fit_refined$beta_K[[i]]),
+    rho = fit_refined$alpha_K[[i]] / fit_refined$beta_K[[i]]
+  )
+}))
+refined_residual <- refined_diagonal$Kval - as.numeric(stats::predict(
+  fit_refined$temporal_fit$fit$K,
+  newdata = data.table::data.table(
+    t1 = refined_diagonal$t,
+    t2 = refined_diagonal$t
+  )
+))
+refined_sig2 <- max(
+  0,
+  sum(refined_diagonal$rho * refined_residual) /
+    sum(refined_diagonal$rho^2)
+)
+stopifnot(isTRUE(all.equal(
+  fit_refined$C$sig2,
+  refined_sig2,
+  tolerance = 1e-10
+)))
 
 for (fold in sort(unique(fit_refined$fold_id))) {
   held_out <- which(fit_refined$fold_id == fold)

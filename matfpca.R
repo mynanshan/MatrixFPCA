@@ -600,8 +600,8 @@ choose.nbasis <- function(
     t2 = rep(t_grid, times = nt)
   )
   K_hat <- matrix(predict(fit_K, newdata = grid), nt, nt)
-  # Estimate sigma^2 from the spline surface before PSD projection. The
-  # projection can inflate the fitted diagonal and bias G(t) - K(t, t)
+  # Estimate sigma^2 against the spline surface before PSD projection. The
+  # projection can inflate the fitted diagonal and bias the residual average
   # downward. The outer covariance wrappers project the final K estimate.
   K_hat <- sym(K_hat)
 
@@ -615,73 +615,43 @@ choose.nbasis <- function(
     ))
   }
 
-  calibrated_nugget <- "nugget_multiplier" %in% names(diag_data)
-  if (calibrated_nugget) {
-    nugget_multiplier <- diag_data$nugget_multiplier
-    if (any(!is.finite(nugget_multiplier)) || any(nugget_multiplier <= 0)) {
-      stop("Diagonal nugget multipliers must be positive and finite.")
-    }
-
-    # Refined spatial weights multiply the diagonal noise contribution by a
-    # known, fold-specific alpha / beta ratio. Anchor K(t, t) to the surface
-    # fitted from off-diagonal entries, then estimate the one common sig2 by
-    # weighted least squares against those known multipliers.
-    diag_data <- data.table::copy(diag_data)
-    diag_data$diag_residual <- diag_data$Kval - as.numeric(predict(
-      fit_K,
-      newdata = data.table::data.table(t1 = diag_data$t, t2 = diag_data$t)
-    ))
-    fit_G <- stats::lm(
-      diag_residual ~ 0 + nugget_multiplier,
-      data = diag_data,
-      weights = w
-    )
-    sig2.min <- if (is.null(sig2.min)) 0 else as.numeric(sig2.min)[1L]
-    sig2_hat <- max(
-      sig2.min,
-      unname(stats::coef(fit_G)[["nugget_multiplier"]])
-    )
-    if (!is.finite(sig2_hat)) {
-      stop("Calibrated diagonal fit did not produce a finite noise estimate.")
-    }
-    G_hat <- diag(K_hat) + sig2_hat
-
-    return(list(
-      K = K_hat,
-      G = G_hat,
-      sig2 = sig2_hat,
-      fit = list(K = fit_K, G = fit_G),
-      nbasis = nbasis
-    ))
+  # The diagonal is needed only for the scalar noise variance. Estimate that
+  # coefficient directly from diagonal residuals instead of fitting a second
+  # univariate smoother. For refined weights, rho is the known fold-specific
+  # alpha / beta nugget multiplier; for identity weights, rho = 1.
+  nugget_multiplier <- if ("nugget_multiplier" %in% names(diag_data)) {
+    diag_data$nugget_multiplier
+  } else {
+    rep(1, nrow(diag_data))
+  }
+  diagonal_weight <- diag_data$w
+  if (any(!is.finite(nugget_multiplier)) || any(nugget_multiplier <= 0)) {
+    stop("Diagonal nugget multipliers must be positive and finite.")
+  }
+  if (any(!is.finite(diagonal_weight)) || any(diagonal_weight <= 0)) {
+    stop("Diagonal averaging weights must be positive and finite.")
   }
 
-  diagEstFunc <- if (nrow(diag_data) > 1e5) mgcv::bam else mgcv::gam
-  formula_G <- stats::as.formula(sprintf(
-    "Kval ~ s(t, k = %d, m = %d, bs = 'ps')",
-    nbasis[["G"]], ndeg
+  diag_residual <- diag_data$Kval - as.numeric(predict(
+    fit_K,
+    newdata = data.table::data.table(t1 = diag_data$t, t2 = diag_data$t)
   ))
-  fit_G <- diagEstFunc(
-    formula_G,
-    data = diag_data,
-    weights = diag_data$w,
-    method = "REML"
-  )
-  G_hat <- as.numeric(predict(
-    fit_G,
-    newdata = data.table::data.table(t = t_grid)
-  ))
-
+  denominator <- sum(diagonal_weight * nugget_multiplier^2)
+  sig2_unconstrained <- sum(
+    diagonal_weight * nugget_multiplier * diag_residual
+  ) / denominator
   sig2.min <- if (is.null(sig2.min)) 0 else as.numeric(sig2.min)[1L]
-  sig2_hat <- max(
-    sig2.min,
-    trapz_average(t_grid, G_hat - diag(K_hat))
-  )
+  sig2_hat <- max(sig2.min, sig2_unconstrained)
+  if (!is.finite(sig2_hat)) {
+    stop("Weighted diagonal residuals did not produce a finite noise estimate.")
+  }
+  G_hat <- diag(K_hat) + sig2_hat
 
   list(
     K = K_hat,
     G = G_hat,
     sig2 = sig2_hat,
-    fit = list(K = fit_K, G = fit_G),
+    fit = list(K = fit_K, G = NULL),
     nbasis = nbasis
   )
 }
