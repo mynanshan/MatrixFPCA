@@ -280,15 +280,16 @@ mem_for_class() {
 }
 
 # Cross-fitted refined weights repeat the pilot/weight calculation once per
-# fold.  In particular, the p=q=150 and 200 settings no longer fit reliably in
-# the one-hour limit used by the pre-cross-fitting experiment.  Keep the limits
-# class-specific so smaller jobs do not request an unnecessarily long walltime.
+# fold.  With automatic temporal bases, stress tests took about 3 minutes for
+# the slowest small/medium task and 4 minutes for the slowest large task.  The
+# defaults below retain a generous buffer for seed and node variability without
+# requesting the multi-hour limits needed by the old fixed-25 basis runs.
 # Each default can be overridden without editing this runner.
 time_for_class() {
   case "$1" in
-    small) echo "${MATFPCA_TIME_SMALL:-2:00:00}" ;;
-    medium) echo "${MATFPCA_TIME_MEDIUM:-4:00:00}" ;;
-    large) echo "${MATFPCA_TIME_LARGE:-8:00:00}" ;;
+    small) echo "${MATFPCA_TIME_SMALL:-1:00:00}" ;;
+    medium) echo "${MATFPCA_TIME_MEDIUM:-1:00:00}" ;;
+    large) echo "${MATFPCA_TIME_LARGE:-2:00:00}" ;;
     *) echo "unknown resource class: $1" >&2; exit 2 ;;
   esac
 }
