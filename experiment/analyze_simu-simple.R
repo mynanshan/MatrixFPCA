@@ -230,7 +230,7 @@ run_columns <- c(
 )
 setting_columns_no_weight <- setdiff(run_columns, "seed")
 available_nbasis <- sort(unique(res$nbasis))
-default_expected_nbasis <- if ("25" %in% available_nbasis) "25" else
+default_expected_nbasis <- if ("theory" %in% available_nbasis) "theory" else
   available_nbasis[[1L]]
 available_weight_folds <- sort(unique(res$weight_folds))
 default_expected_weight_folds <- if (10 %in% available_weight_folds) 10 else
@@ -439,8 +439,8 @@ theme_paper <- theme_bw(base_size = 11) +
 
 plot_nbasis <- requested_plot_nbasis
 if (is.na(plot_nbasis)) {
-  plot_nbasis <- if ("25" %in% available_nbasis) "25" else
-    if ("theory" %in% available_nbasis) "theory" else available_nbasis[[1L]]
+  plot_nbasis <- if ("theory" %in% available_nbasis) "theory" else
+    available_nbasis[[1L]]
 }
 if (!plot_nbasis %in% available_nbasis) {
   warning(

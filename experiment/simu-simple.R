@@ -168,7 +168,7 @@ if (!is.finite(weight_folds) || weight_folds < 1L || weight_folds > n) {
   stop("weight_folds must lie between 1 and n_subjects.")
 }
 seed <- args[["seed"]]
-seed <- ifelse(seed < 0, ceiling(runif(1)*9999), seed)
+seed <- ifelse(seed < 0, ceiling(runif(1) * 9999), seed)
 ifsave <- as.logical(args[["save"]])
 ifplot <- as.logical(args[["plot"]])
 results_dir <- args[["results_dir"]]
@@ -349,6 +349,7 @@ fit_results <- lapply(weight_schemes, function(scheme) {
     )
   })
   runtime <- unname(fit_timing[["elapsed"]])
+  selected_nbasis <- fit$temporal_fit$nbasis
   metrics <- c(
     evaluate_covariance_fit(fit, cov_true),
     evaluate_reconstruction(fit, data, eig_true, scores_true)
@@ -356,6 +357,8 @@ fit_results <- lapply(weight_schemes, function(scheme) {
   cat(
     ">>>>> Weighting scheme: ", scheme, "\n",
     "Runtime (seconds): ", runtime, "\n",
+    "Temporal basis used (K, G): ",
+    paste(selected_nbasis[c("K", "G")], collapse = ", "), "\n",
     "Rel. SSE (U): ", metrics[["relsseU"]], "\n",
     "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
     "Rel. ISE (K): ", metrics[["reliseK"]], "\n",

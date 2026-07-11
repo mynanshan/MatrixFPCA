@@ -29,9 +29,10 @@ fi
 #                   eigendecay and a higher-rank temporal covariance.
 #   both            run ar1 and smooth-highrank for each setting.
 #
-# By default the runner uses a fixed marginal temporal basis dimension of 25.
-# Set MATFPCA_NBASIS=0 or pass --nbasis 0 to use the theory-guided automatic
-# rule from fit_matfcov().
+# By default the runner uses the theory-guided automatic temporal basis rule.
+# Set MATFPCA_NBASIS to a positive integer or pass --nbasis to force a fixed
+# marginal basis dimension.  Large fixed values are expensive because the
+# bivariate temporal smoother has approximately nbasis^2 coefficients.
 
 if [[ "${1:-}" == "--worker" ]]; then
   ROOT_DIR="${3:?project root was not passed to the Slurm worker}"
@@ -130,7 +131,7 @@ min_seed="${2:-1}"
 max_parallel="${3:-100}"
 dry_run=0
 eigensystem_arg="${MATFPCA_EIGENSYSTEM:-ar1}"
-nbasis_arg="${MATFPCA_NBASIS:-25}"
+nbasis_arg="${MATFPCA_NBASIS:-0}"
 weight_folds_arg="${MATFPCA_WEIGHT_FOLDS:-10}"
 
 shift_count=0
