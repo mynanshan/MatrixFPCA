@@ -101,6 +101,14 @@ parser$add_argument("-wf", "--weight_folds",
   type = "integer", default = 10,
   help = "Subject folds for refined weights (1 uses the legacy same sample)."
 )
+parser$add_argument("-cd", "--crossfit_diagonal",
+  type = "character", default = "refined",
+  choices = c("identity", "refined"),
+  help = paste(
+    "Diagonal strategy for cross-fitted Gaussian-refined weights:",
+    "legacy identity scatter or calibrated refined scatter."
+  )
+)
 parser$add_argument("--seed",
   type = "integer", default = -1,
   help = "The base seed"
@@ -164,6 +172,7 @@ if (score_dependence %in% c("independent", "common_signed")) {
 }
 temporal_method_default <- args[["temporal_method"]]
 weight_folds <- args[["weight_folds"]]
+crossfit_diagonal <- args[["crossfit_diagonal"]]
 if (!is.finite(weight_folds) || weight_folds < 1L || weight_folds > n) {
   stop("weight_folds must lie between 1 and n_subjects.")
 }
@@ -182,6 +191,9 @@ if (manual_mode) {
   dependence_param <- 0
   temporal_method_default <- "two_step"
   weight_folds <- 10
+  crossfit_diagonal <- "refined"
+  crossfit_diagonal <- "refined"
+  ifplot <- FALSE
 }
 
 cat(
@@ -205,7 +217,8 @@ cat(
   "scores_distr=", scores_distr, "\n",
   "score_dependence=", score_dependence, "\n",
   "dependence_param=", dependence_param, "\n",
-  "weight_folds=", weight_folds, "\n"
+  "weight_folds=", weight_folds, "\n",
+  "crossfit_diagonal=", crossfit_diagonal, "\n"
 )
 
 library(fda)
@@ -278,6 +291,7 @@ evaluate_covariance_fit <- function(fit, truth) {
   sseV <- matFNorm2(estimate$V - truth$V)
   iseK <- fun2dNorm2(estimate$K - truth$K, truth$t_grid)
   siseC <- matfcovDiffNorm2(estimate, truth)
+  errSig2 <- estimate$sig2 - truth$sig2
   out <- c(
     sseU = sseU,
     sseV = sseV,
@@ -286,7 +300,11 @@ evaluate_covariance_fit <- function(fit, truth) {
     relsseU = sseU / matFNorm2(truth$U),
     relsseV = sseV / matFNorm2(truth$V),
     reliseK = iseK / fun2dNorm2(truth$K, truth$t_grid),
-    relsiseC = siseC / matfcovNorm2(truth)
+    relsiseC = siseC / matfcovNorm2(truth),
+    sig2_true = truth$sig2,
+    sig2_hat = estimate$sig2,
+    errSig2 = errSig2,
+    sseSig2 = errSig2^2
   )
   gamma_metrics <- c(
     sseGammaU = NA_real_,
@@ -345,7 +363,8 @@ fit_results <- lapply(weight_schemes, function(scheme) {
       nbasis = nbasis,
       opwIter = 3,
       temporal_method = temporal_method_default,
-      nfolds = weight_folds
+      nfolds = weight_folds,
+      crossfit_diagonal = crossfit_diagonal
     )
   })
   runtime <- unname(fit_timing[["elapsed"]])
@@ -363,6 +382,10 @@ fit_results <- lapply(weight_schemes, function(scheme) {
     "Rel. SSE (V): ", metrics[["relsseV"]], "\n",
     "Rel. ISE (K): ", metrics[["reliseK"]], "\n",
     "Rel. SISE (C): ", metrics[["relsiseC"]], "\n",
+    "True sigma^2: ", metrics[["sig2_true"]], "\n",
+    "Estimated sigma^2: ", metrics[["sig2_hat"]], "\n",
+    "Sigma^2 error (estimate - truth): ", metrics[["errSig2"]], "\n",
+    "Squared sigma^2 error: ", metrics[["sseSig2"]], "\n",
     "Rel. SSE (raw Gamma_U): ", metrics[["relsseGammaU"]], "\n",
     "Rel. SSE (raw Gamma_V): ", metrics[["relsseGammaV"]], "\n",
     "MSE (X): ", metrics[["mseX"]], "\n",
@@ -482,6 +505,7 @@ if (ifsave) {
     "_nt", nt,
     "_nb", file_token(nbasis_label),
     "_wf", weight_folds,
+    "_cd", file_token(crossfit_diagonal),
     "_r", npc_row, "-", npc_col, "-", npc_time,
     "_eig", file_token(eigensystem),
     "_evc", eigset,
@@ -494,11 +518,12 @@ if (ifsave) {
   header <- c(
     "method", "seed", "weight",
     "n", "p", "q", "sig", "distr", "dependence", "dependence_param",
-    "s1", "s2", "nt", "nbasis", "weight_folds",
+    "s1", "s2", "nt", "nbasis", "weight_folds", "crossfit_diagonal",
     "rank_row", "rank_col", "rank_time",
     "eigensystem", "eigvec_set", "eigval_set",
     "sseU", "sseV", "iseK", "siseC",
     "relsseU", "relsseV", "reliseK", "relsiseC",
+    "sig2_true", "sig2_hat", "errSig2", "sseSig2",
     "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
     "mseX", "relmseX", "runtime"
   )
@@ -514,7 +539,8 @@ if (ifsave) {
     as.list(stats::setNames(c(
       "MatFPCA", seed, scheme,
       n, p, q, sig, scores_distr, score_dependence, dependence_param,
-      s1, s2, nt, nbasis_label, weight_folds, npc_row, npc_col, npc_time,
+      s1, s2, nt, nbasis_label, weight_folds, crossfit_diagonal,
+      npc_row, npc_col, npc_time,
       eigensystem, eigset, eigvalset,
       formatter(metrics[["sseU"]]),
       formatter(metrics[["sseV"]]),
@@ -524,6 +550,10 @@ if (ifsave) {
       formatter(metrics[["relsseV"]]),
       formatter(metrics[["reliseK"]]),
       formatter(metrics[["relsiseC"]]),
+      formatter(metrics[["sig2_true"]], logarithm = FALSE),
+      formatter(metrics[["sig2_hat"]], logarithm = FALSE),
+      formatter(metrics[["errSig2"]], logarithm = FALSE),
+      formatter(metrics[["sseSig2"]], logarithm = FALSE),
       formatter(metrics[["sseGammaU"]]),
       formatter(metrics[["sseGammaV"]]),
       formatter(metrics[["relsseGammaU"]]),

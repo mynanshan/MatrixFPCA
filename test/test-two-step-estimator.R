@@ -25,7 +25,12 @@ stopifnot(
   !"maxIter" %in% names(formals(fit_matfcov)),
   "temporal_method" %in% names(formals(fit_matfcov)),
   "nfolds" %in% names(formals(fit_matfcov)),
-  identical(eval(formals(fit_matfcov)$nfolds), 10L)
+  "crossfit_diagonal" %in% names(formals(fit_matfcov)),
+  identical(eval(formals(fit_matfcov)$nfolds), 10L),
+  identical(
+    eval(formals(fit_matfcov)$crossfit_diagonal),
+    c("refined", "identity")
+  )
 )
 
 fit_identity <- fit_matfcov(
@@ -50,6 +55,15 @@ fit_refined_legacy <- fit_matfcov(
   opwIter = 2,
   nfolds = 1
 )
+fit_refined_identity_diagonal <- fit_matfcov(
+  generated$data,
+  wScheme = "gaussian_refined",
+  noise = TRUE,
+  nbasis = "theory",
+  opwIter = 2,
+  nfolds = 2,
+  crossfit_diagonal = "identity"
+)
 fit_joint_identity <- fit_matfcov(
   generated$data,
   wScheme = "identity",
@@ -66,13 +80,25 @@ fit_joint_refined <- fit_matfcov(
   temporal_method = "joint",
   nfolds = 2
 )
+fit_joint_refined_identity_diagonal <- fit_matfcov(
+  generated$data,
+  wScheme = "gaussian_refined",
+  noise = TRUE,
+  nbasis = "theory",
+  opwIter = 2,
+  temporal_method = "joint",
+  nfolds = 2,
+  crossfit_diagonal = "identity"
+)
 
 for (fit in list(
   fit_identity,
   fit_refined,
   fit_refined_legacy,
+  fit_refined_identity_diagonal,
   fit_joint_identity,
-  fit_joint_refined
+  fit_joint_refined,
+  fit_joint_refined_identity_diagonal
 )) {
   covariance <- fit$C
   stopifnot(
@@ -100,6 +126,8 @@ stopifnot(
   length(fit_refined$pilot) == 2L,
   length(fit_refined$beta_K) == 20L,
   all(is.finite(fit_refined$beta_K)),
+  all(is.finite(fit_refined$alpha_K)),
+  all(fit_refined$alpha_K > 0),
   fit_refined$temporal_fit$crossfit_scale > 0,
   length(fit_refined$fold_id) == 20L,
   length(unique(fit_refined$fold_id)) == 2L,
@@ -108,7 +136,24 @@ stopifnot(
   all(vapply(get_W(fit_refined$W, 3L, "U"), is.matrix, logical(1))),
   all(vapply(get_W(fit_refined$W, 3L, "V"), is.matrix, logical(1))),
   !inherits(fit_refined_legacy$W, "crossfit_mode_weights"),
-  is(fit_refined_legacy$pilot, "matfcov")
+  is(fit_refined_legacy$pilot, "matfcov"),
+  identical(fit_refined$temporal_fit$crossfit_diagonal, "refined"),
+  identical(
+    fit_refined_identity_diagonal$temporal_fit$crossfit_diagonal,
+    "identity"
+  ),
+  identical(
+    fit_joint_refined$temporal_fit$crossfit_diagonal,
+    "refined"
+  ),
+  isTRUE(all.equal(
+    fit_refined$C$sig2,
+    fit_refined$temporal_fit$sig2
+  )),
+  "nugget_multiplier" %in%
+    names(stats::coef(fit_refined$temporal_fit$fit$G)),
+  "nugget_multiplier" %in%
+    names(stats::coef(fit_joint_refined$temporal_fit$fit$K))
 )
 
 for (fold in sort(unique(fit_refined$fold_id))) {

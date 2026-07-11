@@ -615,6 +615,46 @@ choose.nbasis <- function(
     ))
   }
 
+  calibrated_nugget <- "nugget_multiplier" %in% names(diag_data)
+  if (calibrated_nugget) {
+    nugget_multiplier <- diag_data$nugget_multiplier
+    if (any(!is.finite(nugget_multiplier)) || any(nugget_multiplier <= 0)) {
+      stop("Diagonal nugget multipliers must be positive and finite.")
+    }
+
+    # Refined spatial weights multiply the diagonal noise contribution by a
+    # known, fold-specific alpha / beta ratio. Anchor K(t, t) to the surface
+    # fitted from off-diagonal entries, then estimate the one common sig2 by
+    # weighted least squares against those known multipliers.
+    diag_data <- data.table::copy(diag_data)
+    diag_data$diag_residual <- diag_data$Kval - as.numeric(predict(
+      fit_K,
+      newdata = data.table::data.table(t1 = diag_data$t, t2 = diag_data$t)
+    ))
+    fit_G <- stats::lm(
+      diag_residual ~ 0 + nugget_multiplier,
+      data = diag_data,
+      weights = w
+    )
+    sig2.min <- if (is.null(sig2.min)) 0 else as.numeric(sig2.min)[1L]
+    sig2_hat <- max(
+      sig2.min,
+      unname(stats::coef(fit_G)[["nugget_multiplier"]])
+    )
+    if (!is.finite(sig2_hat)) {
+      stop("Calibrated diagonal fit did not produce a finite noise estimate.")
+    }
+    G_hat <- diag(K_hat) + sig2_hat
+
+    return(list(
+      K = K_hat,
+      G = G_hat,
+      sig2 = sig2_hat,
+      fit = list(K = fit_K, G = fit_G),
+      nbasis = nbasis
+    ))
+  }
+
   diagEstFunc <- if (nrow(diag_data) > 1e5) mgcv::bam else mgcv::gam
   formula_G <- stats::as.formula(sprintf(
     "Kval ~ s(t, k = %d, m = %d, bs = 'ps')",
@@ -658,6 +698,17 @@ choose.nbasis <- function(
   covEstFunc <- if (nrow(scatter_data) > 1e5) mgcv::bam else mgcv::gam
   scatter_data <- data.table::copy(scatter_data)
   scatter_data[, diag_ind := as.integer(is_diag)]
+  calibrated_nugget <- "nugget_multiplier" %in% names(scatter_data)
+  nugget_term <- if (calibrated_nugget) {
+    if (any(!is.finite(scatter_data$nugget_multiplier)) ||
+        any(scatter_data$nugget_multiplier < 0) ||
+        any(scatter_data$nugget_multiplier[scatter_data$is_diag] <= 0)) {
+      stop("Nugget multipliers must be positive on the diagonal and finite.")
+    }
+    "nugget_multiplier"
+  } else {
+    "diag_ind"
+  }
 
   formula_K <- stats::as.formula(sprintf(
     paste0(
@@ -665,7 +716,7 @@ choose.nbasis <- function(
       "m = c(%d, %d), bs = c('ps', 'ps'))%s"
     ),
     nbasis[["K"]], nbasis[["K"]], ndeg, ndeg,
-    if (noise) " + diag_ind" else ""
+    if (noise) paste0(" + ", nugget_term) else ""
   ))
 
   fit_K <- covEstFunc(
@@ -680,6 +731,7 @@ choose.nbasis <- function(
     t2 = rep(t_grid, times = nt),
     diag_ind = 0L
   )
+  if (calibrated_nugget) grid$nugget_multiplier <- 0
   K_hat <- matrix(predict(fit_K, newdata = grid), nt, nt)
   K_hat <- sym(K_hat)
 
@@ -695,7 +747,7 @@ choose.nbasis <- function(
   }
 
   sig2.min <- if (is.null(sig2.min)) 0 else as.numeric(sig2.min)[1L]
-  delta_hat <- unname(stats::coef(fit_K)[["diag_ind"]])
+  delta_hat <- unname(stats::coef(fit_K)[[nugget_term]])
   if (!is.finite(delta_hat)) {
     stop("Joint temporal fit did not produce a finite diagonal noise coefficient.")
   }
@@ -897,17 +949,20 @@ estimate_K.matfdata.irreg <- function(
   W1,
   W2,
   beta,
+  alpha = NULL,
   noise = FALSE,
   nbasis = "theory",
   ndeg = 3,
   sig2.min = NULL,
   temporal_method = c("two_step", "joint"),
+  crossfit_diagonal = c("refined", "identity"),
   use_subject_weights = FALSE,
   U_tilde = NULL,
   V_tilde = NULL
 ) {
   stopifnot(inherits(data, "matfdata.irreg"))
   temporal_method <- match.arg(temporal_method)
+  crossfit_diagonal <- match.arg(crossfit_diagonal)
   n <- count_subj(data)
   if (length(W1) != n || length(W2) != n || length(beta) != n) {
     stop("Cross-fitted temporal weights and scales must have one entry per subject.")
@@ -915,6 +970,12 @@ estimate_K.matfdata.irreg <- function(
   beta <- as.numeric(beta)
   if (any(!is.finite(beta)) || any(beta <= 0)) {
     stop("Cross-fitted temporal signal scales must be positive and finite.")
+  }
+  if (crossfit_diagonal == "refined") {
+    alpha <- as.numeric(alpha)
+    if (length(alpha) != n || any(!is.finite(alpha)) || any(alpha <= 0)) {
+      stop("Cross-fitted temporal noise scales must be positive and finite.")
+    }
   }
 
   nt <- length(data$t_grid)
@@ -935,15 +996,17 @@ estimate_K.matfdata.irreg <- function(
     V_tilde = V_tilde
   )
 
-  # The off-diagonal entries use held-out, fold-specific refined weights and
-  # are calibrated to a common K scale before smoothing. Diagonal entries use
-  # identity weights, so their expectation is K(t, t) + sig2 in every fold.
-  # This avoids mixing fold-specific nugget multipliers in the noise smoother.
+  # Refined working covariances are divided by beta, which puts their signal
+  # on a common K scale. Their diagonal noise contribution is then multiplied
+  # by alpha / beta. The legacy strategy replaces the diagonal with identity
+  # scatter; the refined strategy retains it and supplies its known multiplier
+  # to the temporal noise fit.
   scatter <- foreach::foreach(i = seq_len(n), .combine = rbind) %do% {
     Xi <- get_subj_tnsr(data, i)
     Ki_wk <- get_working_K(Xi, W1[[i]], W2[[i]]) / (P * beta[[i]])
-    identity_diag <- apply(Xi@data^2, 3L, sum) / P
-    diag(Ki_wk) <- identity_diag
+    if (crossfit_diagonal == "identity") {
+      diag(Ki_wk) <- apply(Xi@data^2, 3L, sum) / P
+    }
 
     tid <- data$t_idx_list[[i]]
     t_cov_mesh <- pracma::meshgrid(data$t_grid[tid])
@@ -954,33 +1017,44 @@ estimate_K.matfdata.irreg <- function(
     w_off <- if (use_subject_weights) 1 / (Ni * (Ni - 1L)) else 1
     w_diag <- if (use_subject_weights) 1 / Ni else 1
 
-    data.table::data.table(
+    dt <- data.table::data.table(
       t1 = t1,
       t2 = t2,
       Kval = as.vector(Ki_wk),
       is_diag = is_diag,
       w = ifelse(is_diag, w_diag, w_off)
     )
+    if (crossfit_diagonal == "refined") {
+      dt$nugget_multiplier <- ifelse(is_diag, alpha[[i]] / beta[[i]], 0)
+    }
+    dt
   }
 
   if (temporal_method == "joint") {
-    return(.fit_temporal_joint(
+    out <- .fit_temporal_joint(
       scatter_data = scatter,
       t_grid = data$t_grid,
       nbasis = nb,
       ndeg = ndeg,
       noise = noise,
       sig2.min = sig2.min
-    ))
+    )
+    out$crossfit_diagonal <- crossfit_diagonal
+    return(out)
   }
 
+  diag_data <- data.table::data.table(
+    t = scatter$t1[scatter$is_diag],
+    Kval = scatter$Kval[scatter$is_diag],
+    w = scatter$w[scatter$is_diag]
+  )
+  if (crossfit_diagonal == "refined") {
+    diag_data$nugget_multiplier <-
+      scatter$nugget_multiplier[scatter$is_diag]
+  }
   out <- .fit_temporal_two_step(
     offdiag_data = scatter[!scatter$is_diag, ],
-    diag_data = data.table::data.table(
-      t = scatter$t1[scatter$is_diag],
-      Kval = scatter$Kval[scatter$is_diag],
-      w = scatter$w[scatter$is_diag]
-    ),
+    diag_data = diag_data,
     t_grid = data$t_grid,
     nbasis = nb,
     ndeg = ndeg,
@@ -988,6 +1062,7 @@ estimate_K.matfdata.irreg <- function(
     sig2.min = sig2.min
   )
   out$temporal_method <- "two_step"
+  out$crossfit_diagonal <- crossfit_diagonal
   out
 }
 
@@ -1191,6 +1266,7 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   attr(W_subject, "fold_id") <- fold_id
 
   beta_K <- numeric(n)
+  alpha_K <- numeric(n)
   pilot_covariances <- vector("list", length(fold_levels))
   training_subjects <- vector("list", length(fold_levels))
   names(pilot_covariances) <- names(training_subjects) <- paste0(
@@ -1248,6 +1324,10 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     if (!is.finite(fold_beta_K) || fold_beta_K <= 0) {
       stop("Cross-fitted pilot produced a non-positive temporal signal scale.")
     }
+    fold_alpha_K <- (tr(W1K) / p) * (tr(W2K) / q)
+    if (!is.finite(fold_alpha_K) || fold_alpha_K <= 0) {
+      stop("Cross-fitted pilot produced a non-positive temporal noise scale.")
+    }
 
     W2U <- get_W(fold_weights, 2L, "U")
     W3U <- get_W(fold_weights, 3L, "U")
@@ -1257,6 +1337,7 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
       W_subject$K$W1[[i]] <- W1K
       W_subject$K$W2[[i]] <- W2K
       beta_K[[i]] <- fold_beta_K
+      alpha_K[[i]] <- fold_alpha_K
       W_subject$U$W2[[i]] <- W2U
       W_subject$U$W3[[i]] <- W3U[[i]]
       W_subject$V$W1[[i]] <- W1V
@@ -1275,6 +1356,7 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   list(
     W = W_subject,
     beta_K = beta_K,
+    alpha_K = alpha_K,
     pilot = pilot_covariances,
     training_subjects = training_subjects,
     U_tilde = U_tilde,
@@ -1292,10 +1374,12 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
   nbasis = "theory",
   ndeg = 3,
   opwIter = 3,
-  temporal_method = c("two_step", "joint")
+  temporal_method = c("two_step", "joint"),
+  crossfit_diagonal = c("refined", "identity")
 ) {
   stopifnot(inherits(data, "matfdata.irreg"))
   temporal_method <- match.arg(temporal_method)
+  crossfit_diagonal <- match.arg(crossfit_diagonal)
   p <- data$vdim[1]
   q <- data$vdim[2]
   t_grid <- data$t_grid
@@ -1320,10 +1404,12 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     W1 = get_W(W, 1L, "K"),
     W2 = get_W(W, 2L, "K"),
     beta = crossfit$beta_K,
+    alpha = crossfit$alpha_K,
     noise = noise,
     nbasis = nbasis,
     ndeg = ndeg,
     temporal_method = temporal_method,
+    crossfit_diagonal = crossfit_diagonal,
     U_tilde = crossfit$U_tilde,
     V_tilde = crossfit$V_tilde
   )
@@ -1335,15 +1421,23 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     stop("Fold-pilot temporal calibration produced a non-positive scale.")
   }
   K <- K_scale * K_uncalibrated
-  # The fold identity fits provide a stable cross-fitted scalar noise estimate.
-  # The mixed refined-off-diagonal/identity-diagonal smoother is retained for
-  # K shape, but its nugget is sensitive to the pre-calibration K scale.
-  sig2 <- if (noise) max(0, crossfit$sig2_tilde) else 0
+  # The legacy mixed strategy keeps its stable identity-pilot noise estimate.
+  # With refined diagonals, the temporal fit accounts for each fold's known
+  # alpha / beta nugget multiplier and directly estimates the common sig2.
+  sig2 <- if (!noise) {
+    0
+  } else if (crossfit_diagonal == "refined") {
+    max(0, Ksig2$sig2)
+  } else {
+    max(0, crossfit$sig2_tilde)
+  }
   Ksig2$crossfit_scale <- K_scale
   Ksig2$sig2_uncalibrated <- Ksig2$sig2
   Ksig2$sig2 <- sig2
   Ksig2$K_calibrated <- K
-  if (temporal_method == "joint") Ksig2$G <- diag(K) + sig2
+  if (crossfit_diagonal == "refined" || temporal_method == "joint") {
+    Ksig2$G <- diag(K) + sig2
+  }
 
   W2U <- get_W(W, 2L, "U")
   W3U <- get_W(W, 3L, "U")
@@ -1370,6 +1464,7 @@ estimate_V.matfdata.irreg <- function(data, W1, W3, ...) {
     W = W,
     pilot = crossfit$pilot,
     beta_K = crossfit$beta_K,
+    alpha_K = crossfit$alpha_K,
     fold_id = fold_id,
     training_subjects = crossfit$training_subjects,
     temporal_fit = Ksig2,
@@ -1492,10 +1587,12 @@ fit_matfcov <- function(
   opwIter = 3,
   temporal_method = c("two_step", "joint"),
   nfolds = 10L,
-  fold_id = NULL
+  fold_id = NULL,
+  crossfit_diagonal = c("refined", "identity")
 ) {
   wScheme <- match_weight_scheme(wScheme)
   temporal_method <- match.arg(temporal_method)
+  crossfit_diagonal <- match.arg(crossfit_diagonal)
   stopifnot(inherits(data, "matfdata.irreg"))
 
   if (wScheme == "identity") {
@@ -1520,7 +1617,8 @@ fit_matfcov <- function(
         nbasis = nbasis,
         ndeg = ndeg,
         opwIter = opwIter,
-        temporal_method = temporal_method
+        temporal_method = temporal_method,
+        crossfit_diagonal = crossfit_diagonal
       ))
     }
   }
