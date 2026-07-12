@@ -396,41 +396,6 @@ for (metric in metric_columns) {
   ]
 }
 
-plot_data <- melt(
-  summary_long,
-  id.vars = setting_columns,
-  measure.vars = c(
-    "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
-  ),
-  variable.name = "metric",
-  value.name = "mean_error"
-)
-plot_data[
-  ,
-  metric := factor(
-    metric,
-    levels = c(
-      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
-    ),
-    labels = c("U", "V", "K", "Full covariance")
-  )
-]
-plot_data[
-  ,
-  `:=`(
-    weight_label = factor(
-      weight,
-      levels = c("identity", "gaussian_refined"),
-      labels = c("Identity", "Gaussian-refined")
-    ),
-    distr_label = factor(
-      distr,
-      levels = c("normal", "uniform", "beta32", "t5"),
-      labels = c("Gaussian", "Uniform", "Beta(3,2)", "t(5)")
-    )
-  )
-]
-
 theme_paper <- theme_bw(base_size = 11) +
   theme(
     legend.position = "top",
@@ -482,31 +447,29 @@ if (!plot_eigensystem %in% available_eigensystems) {
 }
 eigensystem_title <- paste("spatial eigensystem =", plot_eigensystem)
 
-dimension_metric_data <- melt(
-  summary_long,
-  id.vars = c(setting_columns, "n_rep"),
-  measure.vars = list(
-    mean_error = c(
-      "relsseU_mean", "relsseV_mean", "reliseK_mean", "relsiseC_mean"
-    ),
-    sd_error = c(
-      "relsseU_sd", "relsseV_sd", "reliseK_sd", "relsiseC_sd"
-    )
+raw_plot_data <- melt(
+  res,
+  id.vars = c("seed", setting_columns),
+  measure.vars = c(
+    "relsseU_raw", "relsseV_raw", "reliseK_raw", "relsiseC_raw"
   ),
-  variable.name = "metric_index"
+  variable.name = "metric",
+  value.name = "error"
 )
-dimension_metric_data[
+raw_plot_data[
   ,
   metric := factor(
-    metric_index,
-    levels = 1:4,
+    metric,
+    levels = c(
+      "relsseU_raw", "relsseV_raw", "reliseK_raw", "relsiseC_raw"
+    ),
     labels = c(
       "U relative Frobenius", "V relative Frobenius",
       "K relative ISE", "Full covariance"
     )
   )
 ]
-dimension_metric_data[
+raw_plot_data[
   ,
   `:=`(
     weight_label = factor(
@@ -518,19 +481,11 @@ dimension_metric_data[
       distr,
       levels = c("normal", "uniform", "beta32", "t5"),
       labels = c("Gaussian", "Uniform", "Beta(3,2)", "t(5)")
-    ),
-    mcse = sd_error / sqrt(n_rep)
-  )
-]
-dimension_metric_data[
-  ,
-  `:=`(
-    error_lower = mean_error * exp(-1.96 * mcse / mean_error),
-    error_upper = mean_error * exp(1.96 * mcse / mean_error)
+    )
   )
 ]
 
-dimension_data <- dimension_metric_data[
+dimension_data <- raw_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & sig == 0.1 & dependence == "independent" &
@@ -538,18 +493,20 @@ dimension_data <- dimension_metric_data[
 ]
 dimension_plot <- ggplot(
   dimension_data,
-  aes(p, mean_error, color = weight_label, shape = weight_label)
+  aes(factor(p), error, color = weight_label, fill = weight_label)
 ) +
-  geom_ribbon(
-    aes(
-      ymin = error_lower, ymax = error_upper,
-      fill = weight_label, group = weight_label
-    ),
-    alpha = 0.12,
-    color = NA
+  geom_boxplot(
+    position = position_dodge(width = 0.75), width = 0.65,
+    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
   ) +
-  geom_line() +
-  geom_point(size = 2) +
+  stat_summary(
+    aes(group = weight_label), fun = median, geom = "line",
+    position = position_dodge(width = 0.75), linewidth = 0.6
+  ) +
+  stat_summary(
+    fun = median, geom = "point",
+    position = position_dodge(width = 0.75), size = 1.6
+  ) +
   scale_y_log10() +
   facet_grid(metric ~ distr_label, scales = "free_y") +
   labs(
@@ -561,49 +518,50 @@ dimension_plot <- ggplot(
       eigensystem_title,
       sep = "\n"
     ),
-    x = "Spatial dimension (p = q)", y = "Mean relative error",
-    color = "Weighting", shape = "Weighting", fill = "Weighting"
+    x = "Spatial dimension (p = q)", y = "Relative error",
+    color = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
-dependent_dimension_data <- dimension_metric_data[
+dependent_dimension_data <- raw_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & sig == 0.1 & distr == "normal" &
-    dependence != "independent" & p %in% dimension_grid &
-    weight == "identity"
+    dependence != "independent" & p %in% dimension_grid
 ]
 dependent_dimension_plot <- ggplot(
   dependent_dimension_data,
-  aes(p, mean_error, color = weight_label, shape = weight_label)
+  aes(factor(p), error, color = weight_label, fill = weight_label)
 ) +
-  geom_ribbon(
-    aes(
-      ymin = error_lower, ymax = error_upper,
-      fill = weight_label, group = weight_label
-    ),
-    alpha = 0.12,
-    color = NA
+  geom_boxplot(
+    position = position_dodge(width = 0.75), width = 0.65,
+    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
   ) +
-  geom_line() +
-  geom_point(size = 2) +
+  stat_summary(
+    aes(group = weight_label), fun = median, geom = "line",
+    position = position_dodge(width = 0.75), linewidth = 0.6
+  ) +
+  stat_summary(
+    fun = median, geom = "point",
+    position = position_dodge(width = 0.75), size = 1.6
+  ) +
   scale_y_log10() +
   facet_grid(metric ~ dependence, scales = "free_y") +
   labs(
     title = paste(
       "Error vs. spatial dimension",
-      "Fixed: n = 50, sigma = 0.1, Gaussian scores, identity weighting",
+      "Fixed: n = 50, sigma = 0.1, Gaussian scores",
       nbasis_title,
       weight_folds_title,
       eigensystem_title,
       sep = "\n"
     ),
-    x = "Spatial dimension (p = q)", y = "Mean relative error",
-    color = "Weighting", shape = "Weighting", fill = "Weighting"
+    x = "Spatial dimension (p = q)", y = "Relative error",
+    color = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
-sample_size_data <- plot_data[
+sample_size_data <- raw_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     p == 30 & sig == 0.1 & distr == "normal" &
@@ -611,10 +569,20 @@ sample_size_data <- plot_data[
 ]
 sample_size_plot <- ggplot(
   sample_size_data,
-  aes(n, mean_error, color = weight_label, shape = weight_label)
+  aes(factor(n), error, color = weight_label, fill = weight_label)
 ) +
-  geom_line() +
-  geom_point(size = 2) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75), width = 0.65,
+    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
+  ) +
+  stat_summary(
+    aes(group = weight_label), fun = median, geom = "line",
+    position = position_dodge(width = 0.75), linewidth = 0.6
+  ) +
+  stat_summary(
+    fun = median, geom = "point",
+    position = position_dodge(width = 0.75), size = 1.6
+  ) +
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
   labs(
@@ -626,12 +594,12 @@ sample_size_plot <- ggplot(
       eigensystem_title,
       sep = "\n"
     ),
-    x = "Number of subjects", y = "Mean relative error",
-    color = "Weighting", shape = "Weighting"
+    x = "Number of subjects", y = "Relative error",
+    color = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
-noise_data <- plot_data[
+noise_data <- raw_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & p == 30 & distr == "normal" &
@@ -639,10 +607,20 @@ noise_data <- plot_data[
 ]
 noise_plot <- ggplot(
   noise_data,
-  aes(sig, mean_error, color = weight_label, shape = weight_label)
+  aes(factor(sig), error, color = weight_label, fill = weight_label)
 ) +
-  geom_line() +
-  geom_point(size = 2) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75), width = 0.65,
+    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
+  ) +
+  stat_summary(
+    aes(group = weight_label), fun = median, geom = "line",
+    position = position_dodge(width = 0.75), linewidth = 0.6
+  ) +
+  stat_summary(
+    fun = median, geom = "point",
+    position = position_dodge(width = 0.75), size = 1.6
+  ) +
   scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
   labs(
@@ -654,12 +632,12 @@ noise_plot <- ggplot(
       eigensystem_title,
       sep = "\n"
     ),
-    x = "Noise standard deviation", y = "Mean relative error",
-    color = "Weighting", shape = "Weighting"
+    x = "Noise standard deviation", y = "Relative error",
+    color = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
-distribution_data <- plot_data[
+distribution_data <- raw_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & p == 50 & sig == 0.1 & dependence == "independent"
@@ -667,11 +645,18 @@ distribution_data <- plot_data[
 distribution_plot <- ggplot(
   distribution_data,
   aes(
-    distr_label, mean_error, fill = weight_label
+    distr_label, error, color = weight_label, fill = weight_label
   )
 ) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75), width = 0.65,
+    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
+  ) +
+  stat_summary(
+    fun = median, geom = "point",
+    position = position_dodge(width = 0.75), size = 1.6
+  ) +
+  scale_y_log10() +
   facet_wrap(~metric, scales = "free_y") +
   labs(
     title = paste(
@@ -682,8 +667,8 @@ distribution_plot <- ggplot(
       eigensystem_title,
       sep = "\n"
     ),
-    x = "FPC-score distribution", y = "Mean relative error",
-    fill = "Weighting"
+    x = "FPC-score distribution", y = "Relative error",
+    color = "Weighting", fill = "Weighting"
   ) +
   theme_paper
 
