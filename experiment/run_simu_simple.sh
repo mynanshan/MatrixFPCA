@@ -11,6 +11,7 @@ fi
 #   experiment/run_simu_simple.sh 100 1 100
 #   experiment/run_simu_simple.sh 200 101 100 --dry-run
 #   experiment/run_simu_simple.sh 100 1 100 --no-overwrite
+#   experiment/run_simu_simple.sh 500 1 100 --retry-incomplete --dry-run
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem ar1
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
@@ -132,6 +133,7 @@ min_seed="${2:-1}"
 max_parallel="${3:-100}"
 dry_run=0
 no_overwrite=0
+retry_incomplete=0
 eigensystem_arg="${MATFPCA_EIGENSYSTEM:-ar1}"
 nbasis_arg="${MATFPCA_NBASIS:-0}"
 weight_folds_arg="${MATFPCA_WEIGHT_FOLDS:-10}"
@@ -150,6 +152,10 @@ while (($#)); do
       ;;
     --no-overwrite)
       no_overwrite=1
+      shift
+      ;;
+    --retry-incomplete)
+      retry_incomplete=1
       shift
       ;;
     --eigensystem)
@@ -197,6 +203,10 @@ if ! [[ "${max_parallel}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if (( min_seed > max_seed )); then
   echo "min_seed must be less than or equal to max_seed" >&2
+  exit 2
+fi
+if (( no_overwrite && retry_incomplete )); then
+  echo "--no-overwrite and --retry-incomplete are mutually exclusive" >&2
   exit 2
 fi
 if ! [[ "${nbasis_arg}" =~ ^[0-9]+$ ]]; then
@@ -263,6 +273,8 @@ declare -A manifest_by_class
 declare -A class_task_count
 config_count=0
 skipped_existing_count=0
+skipped_nonempty_count=0
+skipped_absent_count=0
 
 DIMENSIONS=(20 50 100 150 200)
 DISTRIBUTIONS=(normal beta32 t5)
@@ -395,15 +407,25 @@ add_config() {
 
     local seed
     for ((seed = min_seed; seed <= max_seed; seed++)); do
-      if (( no_overwrite )); then
+      if (( no_overwrite || retry_incomplete )); then
         local result_file
         result_file="$(result_file_for_config \
           "${n}" "${p}" "${sigma}" "${distribution}" "${dependence}" \
           "${dep_param}" "${eigensystem}" "${eigvec_set}" "${eigval_set}" \
           "${rank_time}" "${seed}")"
-        if [[ -f "${result_file}" ]]; then
+        if (( no_overwrite )) && [[ -f "${result_file}" ]]; then
           skipped_existing_count=$((skipped_existing_count + 1))
           continue
+        fi
+        if (( retry_incomplete )); then
+          if [[ ! -e "${result_file}" ]]; then
+            skipped_absent_count=$((skipped_absent_count + 1))
+            continue
+          fi
+          if [[ -s "${result_file}" ]]; then
+            skipped_nonempty_count=$((skipped_nonempty_count + 1))
+            continue
+          fi
         fi
       fi
 
@@ -463,6 +485,10 @@ echo "Refined-weight cross-fitting folds: ${weight_folds_arg}"
 echo "Seed range: ${min_seed}-${max_seed} (${seed_count} seeds per configuration)"
 if (( no_overwrite )); then
   echo "Existing-result policy: skip (${skipped_existing_count} tasks skipped)"
+elif (( retry_incomplete )); then
+  echo "Existing-result policy: retry zero-byte files only"
+  echo "Nonempty results skipped: ${skipped_nonempty_count}"
+  echo "Absent results skipped: ${skipped_absent_count}"
 else
   echo "Existing-result policy: overwrite"
 fi

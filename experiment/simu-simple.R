@@ -563,9 +563,25 @@ if (ifsave) {
       formatter(runtime, logarithm = FALSE)
     ), header))
   })
-  data.table::fwrite(
-    data.table::rbindlist(output_rows),
-    file = file_path
+  # Publish completed output atomically so interrupted jobs do not leave a
+  # zero-byte file that looks like a finished simulation result.
+  temp_path <- tempfile(
+    pattern = paste0(".", file_name, "."),
+    tmpdir = dir_path
   )
+  tryCatch(
+    data.table::fwrite(
+      data.table::rbindlist(output_rows),
+      file = temp_path
+    ),
+    error = function(e) {
+      unlink(temp_path)
+      stop(e)
+    }
+  )
+  if (!file.rename(temp_path, file_path)) {
+    unlink(temp_path)
+    stop("Could not publish simulation result: ", file_path)
+  }
 
 }
