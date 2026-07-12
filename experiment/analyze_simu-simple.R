@@ -607,7 +607,7 @@ add_outer_annotations <- function(x_label, row_labels = NULL) {
   legend(
     "top", legend = names(method_colors), col = method_colors,
     lty = 1, lwd = 2, pch = 16, pt.cex = 0.9,
-    horiz = TRUE, bty = "n", cex = 1.05, inset = 0.012
+    horiz = TRUE, bty = "n", cex = 1.05, inset = 0.03
   )
   text(0.5, 0.018, x_label, cex = 1.05)
   if (!is.null(row_labels)) {
@@ -633,7 +633,7 @@ plot_condition_grid <- function(
   pdf(file.path(output_dir, filename), width = width, height = height)
   on.exit(dev.off())
   layout(matrix(seq_len(nrow * ncol), nrow = nrow, byrow = TRUE))
-  par(oma = c(3.2, 3.8, 4.2, 4.4))
+  par(oma = c(3.2, 2.8, 4.2, 4.4))
   for (row in seq_along(metrics)) {
     row_mean_data <- means[
       metric == metrics[[row]] & get(condition_var) %in% condition_values
@@ -672,7 +672,7 @@ plot_metric_grid <- function(
   pdf(file.path(output_dir, filename), width = width, height = height)
   on.exit(dev.off())
   layout(matrix(seq_len(8L), nrow = 2L, byrow = TRUE))
-  par(oma = c(3.2, 3.8, 4.2, 1.2))
+  par(oma = c(3.2, 1.8, 4.2, 1.2))
   for (index in seq_along(metrics)) {
     row <- if (index <= 2L) 1L else 2L
     bottom <- row == 2L
