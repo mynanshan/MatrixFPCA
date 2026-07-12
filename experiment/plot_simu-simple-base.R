@@ -103,8 +103,11 @@ draw_mean_panel <- function(
 ) {
   x <- sort(unique(data[[x_var]]))
   if (is.null(ylim)) ylim <- mean_panel_limits(data)
+  x_limits <- range(x)
+  x_padding <- if (length(x) > 1L) 0.5 * min(diff(x)) else 0.5
+  x_limits <- x_limits + c(-x_padding, x_padding)
   plot(
-    NA, xlim = range(x), ylim = ylim, log = "y",
+    NA, xlim = x_limits, ylim = ylim, log = "y",
     axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
   )
   grid(col = "grey90", lty = 1)
