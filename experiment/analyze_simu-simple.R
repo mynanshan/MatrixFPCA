@@ -399,7 +399,8 @@ for (metric in metric_columns) {
 theme_paper <- theme_bw(base_size = 11) +
   theme(
     legend.position = "top",
-    panel.grid.minor = element_blank()
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(size = 9, hjust = 0.5)
   )
 
 plot_nbasis <- requested_plot_nbasis
@@ -414,11 +415,6 @@ if (!plot_nbasis %in% available_nbasis) {
   )
   plot_nbasis <- available_nbasis[[1L]]
 }
-nbasis_title <- if (identical(plot_nbasis, "theory")) {
-  "theory-guided temporal basis"
-} else {
-  paste("temporal marginal basis =", plot_nbasis)
-}
 plot_weight_folds <- requested_plot_weight_folds
 if (is.na(plot_weight_folds)) {
   plot_weight_folds <- if (10 %in% available_weight_folds) 10 else
@@ -431,7 +427,6 @@ if (!plot_weight_folds %in% available_weight_folds) {
   )
   plot_weight_folds <- available_weight_folds[[1L]]
 }
-weight_folds_title <- paste("refined-weight folds =", plot_weight_folds)
 available_eigensystems <- sort(unique(res$eigensystem))
 plot_eigensystem <- requested_plot_eigensystem
 if (is.na(plot_eigensystem)) {
@@ -445,8 +440,6 @@ if (!plot_eigensystem %in% available_eigensystems) {
   )
   plot_eigensystem <- available_eigensystems[[1L]]
 }
-eigensystem_title <- paste("spatial eigensystem =", plot_eigensystem)
-
 raw_plot_data <- melt(
   res,
   id.vars = c("seed", setting_columns),
@@ -485,192 +478,225 @@ raw_plot_data[
   )
 ]
 
-dimension_data <- raw_plot_data[
+# Uniform scores are retained in the saved summaries but omitted from figures:
+# their behavior is very similar to the more asymmetric Beta(3,2) case.
+raw_plot_data <- raw_plot_data[distr != "uniform"]
+
+mean_plot_data <- raw_plot_data[
+  ,
+  .(
+    mean_error = mean(error, na.rm = TRUE),
+    se_error = sd(error, na.rm = TRUE) / sqrt(sum(!is.na(error)))
+  ),
+  by = c(setdiff(setting_columns, "weight"), "metric", "weight_label", "distr_label")
+]
+mean_plot_data[
+  ,
+  `:=`(
+    error_lower = pmax(.Machine$double.xmin, mean_error - 1.96 * se_error),
+    error_upper = mean_error + 1.96 * se_error
+  )
+]
+
+difference_id_columns <- c(
+  "seed", setdiff(setting_columns, "weight"), "metric", "distr_label"
+)
+difference_formula <- stats::as.formula(paste(
+  paste(difference_id_columns, collapse = " + "), "~ weight"
+))
+difference_plot_data <- dcast(
+  raw_plot_data,
+  difference_formula,
+  value.var = "error"
+)
+difference_plot_data[, error_difference := identity - gaussian_refined]
+
+mean_trend_panel <- function(data, x_var, panel_title, x_label, band = TRUE) {
+  plot <- ggplot(
+    data,
+    aes(
+      x = .data[[x_var]], y = mean_error,
+      color = weight_label, fill = weight_label, group = weight_label
+    )
+  )
+  if (band) {
+    plot <- plot + geom_ribbon(
+      aes(ymin = error_lower, ymax = error_upper),
+      alpha = 0.14, color = NA
+    )
+  } else {
+    plot <- plot + geom_errorbar(
+      aes(ymin = error_lower, ymax = error_upper),
+      position = position_dodge(width = 0.35), width = 0.12,
+      linewidth = 0.45
+    )
+  }
+  plot +
+    geom_line(linewidth = 0.6) +
+    geom_point(size = 1.7) +
+    scale_y_log10() +
+    facet_wrap(~metric, ncol = 1, scales = "free_y", strip.position = "right") +
+    labs(title = panel_title, x = x_label, y = NULL, color = "Weighting", fill = "Weighting") +
+    theme_paper
+}
+
+difference_box_panel <- function(data, x_var, panel_title, x_label) {
+  ggplot(
+    data,
+    aes(
+      x = factor(.data[[x_var]]), y = error_difference,
+      group = factor(.data[[x_var]])
+    )
+  ) +
+    geom_hline(yintercept = 0, linewidth = 0.35, color = "grey45") +
+    geom_boxplot(
+      width = 0.48, fill = "grey82", color = "grey25",
+      linewidth = 0.4, outlier.alpha = 0.35, outlier.size = 0.65
+    ) +
+    facet_wrap(~metric, ncol = 1, scales = "free_y", strip.position = "right") +
+    labs(title = panel_title, x = x_label, y = NULL) +
+    theme_paper +
+    theme(legend.position = "none")
+}
+
+condition_pair <- function(
+  mean_data, difference_data, condition_var, condition_value,
+  condition_label, x_var, x_label, band = TRUE
+) {
+  mean_subset <- mean_data[get(condition_var) == condition_value]
+  difference_subset <- difference_data[get(condition_var) == condition_value]
+  mean_panel <- mean_trend_panel(
+    mean_subset, x_var, paste0(condition_label, "\nMean error"), x_label, band
+  )
+  difference_panel <- difference_box_panel(
+    difference_subset, x_var,
+    paste0(condition_label, "\nIdentity - Gaussian-refined"), x_label
+  )
+  patchwork::wrap_plots(
+    list(mean_panel, difference_panel), nrow = 1, widths = c(1.35, 1)
+  )
+}
+
+assemble_condition_pairs <- function(
+  mean_data, difference_data, condition_var, condition_values,
+  condition_labels, x_var, x_label, ncol = length(condition_values),
+  band = TRUE
+) {
+  pairs <- Map(
+    function(value, label) condition_pair(
+      mean_data, difference_data, condition_var, value, label,
+      x_var, x_label, band
+    ),
+    condition_values, condition_labels
+  )
+  patchwork::wrap_plots(pairs, ncol = ncol, guides = "collect") &
+    theme(legend.position = "top")
+}
+raw_plot_data[
+  ,
+  `:=`(
+    weight_label = factor(
+      weight,
+      levels = c("identity", "gaussian_refined"),
+      labels = c("Identity", "Gaussian-refined")
+    ),
+    distr_label = factor(
+      distr,
+      levels = c("normal", "uniform", "beta32", "t5"),
+      labels = c("Gaussian", "Uniform", "Beta(3,2)", "t(5)")
+    )
+  )
+]
+
+dimension_data <- mean_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & sig == 0.1 & dependence == "independent" &
     p %in% dimension_grid
 ]
-dimension_plot <- ggplot(
-  dimension_data,
-  aes(factor(p), error, color = weight_label, fill = weight_label)
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.75), width = 0.65,
-    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
-  ) +
-  stat_summary(
-    aes(group = weight_label), fun = median, geom = "line",
-    position = position_dodge(width = 0.75), linewidth = 0.6
-  ) +
-  stat_summary(
-    fun = median, geom = "point",
-    position = position_dodge(width = 0.75), size = 1.6
-  ) +
-  scale_y_log10() +
-  facet_grid(metric ~ distr_label, scales = "free_y") +
-  labs(
-    title = paste(
-      "Error vs. spatial dimension",
-      "Fixed: n = 50, sigma = 0.1, independent scores",
-      nbasis_title,
-      weight_folds_title,
-      eigensystem_title,
-      sep = "\n"
-    ),
-    x = "Spatial dimension (p = q)", y = "Relative error",
-    color = "Weighting", fill = "Weighting"
-  ) +
-  theme_paper
+dimension_difference_data <- difference_plot_data[
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
+    n == 50 & sig == 0.1 & dependence == "independent" &
+    p %in% dimension_grid
+]
+dimension_plot <- assemble_condition_pairs(
+  dimension_data, dimension_difference_data,
+  "distr", c("normal", "beta32", "t5"),
+  c("Gaussian", "Beta(3,2)", "t(5)"),
+  "p", "Spatial dimension (p = q)"
+)
 
-dependent_dimension_data <- raw_plot_data[
+dependent_dimension_data <- mean_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & sig == 0.1 & distr == "normal" &
     dependence != "independent" & p %in% dimension_grid
 ]
-dependent_dimension_plot <- ggplot(
-  dependent_dimension_data,
-  aes(factor(p), error, color = weight_label, fill = weight_label)
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.75), width = 0.65,
-    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
-  ) +
-  stat_summary(
-    aes(group = weight_label), fun = median, geom = "line",
-    position = position_dodge(width = 0.75), linewidth = 0.6
-  ) +
-  stat_summary(
-    fun = median, geom = "point",
-    position = position_dodge(width = 0.75), size = 1.6
-  ) +
-  scale_y_log10() +
-  facet_grid(metric ~ dependence, scales = "free_y") +
-  labs(
-    title = paste(
-      "Error vs. spatial dimension",
-      "Fixed: n = 50, sigma = 0.1, Gaussian scores",
-      nbasis_title,
-      weight_folds_title,
-      eigensystem_title,
-      sep = "\n"
-    ),
-    x = "Spatial dimension (p = q)", y = "Relative error",
-    color = "Weighting", fill = "Weighting"
-  ) +
-  theme_paper
+dependent_dimension_difference_data <- difference_plot_data[
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
+    n == 50 & sig == 0.1 & distr == "normal" &
+    dependence != "independent" & p %in% dimension_grid
+]
+dependent_dimension_plot <- assemble_condition_pairs(
+  dependent_dimension_data, dependent_dimension_difference_data,
+  "dependence",
+  c("common_amplitude", "common_signed", "heavy_amplitude"),
+  c("Common amplitude", "Common signed", "Heavy amplitude"),
+  "p", "Spatial dimension (p = q)"
+)
 
-sample_size_data <- raw_plot_data[
+sample_size_data <- mean_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     p == 30 & sig == 0.1 & distr == "normal" &
     dependence == "independent"
 ]
-sample_size_plot <- ggplot(
-  sample_size_data,
-  aes(factor(n), error, color = weight_label, fill = weight_label)
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.75), width = 0.65,
-    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
-  ) +
-  stat_summary(
-    aes(group = weight_label), fun = median, geom = "line",
-    position = position_dodge(width = 0.75), linewidth = 0.6
-  ) +
-  stat_summary(
-    fun = median, geom = "point",
-    position = position_dodge(width = 0.75), size = 1.6
-  ) +
-  scale_y_log10() +
-  facet_wrap(~metric, scales = "free_y") +
-  labs(
-    title = paste(
-      "Error vs. number of subjects",
-      "Fixed: p = q = 30, sigma = 0.1, Gaussian scores, independent scores",
-      nbasis_title,
-      weight_folds_title,
-      eigensystem_title,
-      sep = "\n"
-    ),
-    x = "Number of subjects", y = "Relative error",
-    color = "Weighting", fill = "Weighting"
-  ) +
-  theme_paper
+sample_size_difference_data <- difference_plot_data[
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
+    p == 30 & sig == 0.1 & distr == "normal" & dependence == "independent"
+]
+metric_values <- levels(raw_plot_data$metric)
+sample_size_plot <- assemble_condition_pairs(
+  sample_size_data, sample_size_difference_data,
+  "metric", metric_values, metric_values,
+  "n", "Number of subjects", ncol = 2
+)
 
-noise_data <- raw_plot_data[
+noise_data <- mean_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & p == 30 & distr == "normal" &
     dependence == "independent"
 ]
-noise_plot <- ggplot(
-  noise_data,
-  aes(factor(sig), error, color = weight_label, fill = weight_label)
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.75), width = 0.65,
-    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
-  ) +
-  stat_summary(
-    aes(group = weight_label), fun = median, geom = "line",
-    position = position_dodge(width = 0.75), linewidth = 0.6
-  ) +
-  stat_summary(
-    fun = median, geom = "point",
-    position = position_dodge(width = 0.75), size = 1.6
-  ) +
-  scale_y_log10() +
-  facet_wrap(~metric, scales = "free_y") +
-  labs(
-    title = paste(
-      "Error vs. noise level",
-      "Fixed: n = 50, p = q = 30, Gaussian scores, independent scores",
-      nbasis_title,
-      weight_folds_title,
-      eigensystem_title,
-      sep = "\n"
-    ),
-    x = "Noise standard deviation", y = "Relative error",
-    color = "Weighting", fill = "Weighting"
-  ) +
-  theme_paper
+noise_difference_data <- difference_plot_data[
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
+    n == 50 & p == 30 & distr == "normal" & dependence == "independent"
+]
+noise_plot <- assemble_condition_pairs(
+  noise_data, noise_difference_data,
+  "metric", metric_values, metric_values,
+  "sig", "Noise standard deviation", ncol = 2
+)
 
-distribution_data <- raw_plot_data[
+distribution_data <- mean_plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
     n == 50 & p == 50 & sig == 0.1 & dependence == "independent"
 ]
-distribution_plot <- ggplot(
-  distribution_data,
-  aes(
-    distr_label, error, color = weight_label, fill = weight_label
-  )
-) +
-  geom_boxplot(
-    position = position_dodge(width = 0.75), width = 0.65,
-    alpha = 0.18, outlier.alpha = 0.35, outlier.size = 0.7
-  ) +
-  stat_summary(
-    fun = median, geom = "point",
-    position = position_dodge(width = 0.75), size = 1.6
-  ) +
-  scale_y_log10() +
-  facet_wrap(~metric, scales = "free_y") +
-  labs(
-    title = paste(
-      "Error vs. FPC-score distribution",
-      "Fixed: n = 50, p = q = 50, sigma = 0.1, independent scores",
-      nbasis_title,
-      weight_folds_title,
-      eigensystem_title,
-      sep = "\n"
-    ),
-    x = "FPC-score distribution", y = "Relative error",
-    color = "Weighting", fill = "Weighting"
-  ) +
-  theme_paper
+distribution_difference_data <- difference_plot_data[
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem &
+    n == 50 & p == 50 & sig == 0.1 & dependence == "independent"
+]
+distribution_plot <- assemble_condition_pairs(
+  distribution_data, distribution_difference_data,
+  "metric", metric_values, metric_values,
+  "distr_label", "FPC-score distribution", ncol = 2, band = FALSE
+)
 
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 fwrite(res, file.path(output_dir, "simulation_raw_combined.csv"))
@@ -697,20 +723,24 @@ save_plot_if_data <- function(data, plot, filename, width, height) {
 }
 
 save_plot_if_data(
-  dimension_data, dimension_plot, "error_vs_dimension.pdf", 11, 8
+  dimension_data, dimension_plot,
+  "error_vs_dimension_n50_sig0p1_independent.pdf", 15, 8
 )
 save_plot_if_data(
   dependent_dimension_data, dependent_dimension_plot,
-  "error_vs_dimension_dependent.pdf", 11, 8
+  "error_vs_dimension_dependent_n50_sig0p1_normal.pdf", 15, 8
 )
 save_plot_if_data(
-  sample_size_data, sample_size_plot, "error_vs_sample_size.pdf", 8, 5
+  sample_size_data, sample_size_plot,
+  "error_vs_sample_size_p30_sig0p1_normal_independent.pdf", 11, 7
 )
 save_plot_if_data(
-  noise_data, noise_plot, "error_vs_noise.pdf", 8, 5
+  noise_data, noise_plot,
+  "error_vs_noise_n50_p30_normal_independent.pdf", 11, 7
 )
 save_plot_if_data(
-  distribution_data, distribution_plot, "error_vs_distribution.pdf", 8, 5
+  distribution_data, distribution_plot,
+  "error_vs_distribution_n50_p50_sig0p1_independent.pdf", 11, 7
 )
 
 cat("Read", length(files), "files and", nrow(res), "method rows.\n")

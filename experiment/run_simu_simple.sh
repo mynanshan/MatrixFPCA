@@ -265,7 +265,7 @@ config_count=0
 skipped_existing_count=0
 
 DIMENSIONS=(20 50 100 150 200)
-DISTRIBUTIONS=(normal uniform beta32 t5)
+DISTRIBUTIONS=(normal beta32 t5)
 RESOURCE_CLASSES=(small medium large)
 
 cpus_for_class() {
