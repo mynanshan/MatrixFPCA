@@ -387,7 +387,7 @@ for p in "${DIMENSIONS[@]}"; do
 done
 
 # Noise series.
-for sigma in 0.1 0.3 0.5; do
+for sigma in 0.1 0.5 1; do
   add_config 50 30 "${sigma}" normal independent 0
 done
 
