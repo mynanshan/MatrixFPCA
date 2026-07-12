@@ -20,7 +20,7 @@ manifest_dirs <- c(
   file.path(results_dir, "manifests"),
   file.path("logs", "manifests")
 )
-dimension_grid <- c(20, 30, 50, 100, 150, 200)
+dimension_grid <- c(20, 50, 100, 150, 200)
 
 files <- list.files(
   results_dir,
@@ -199,7 +199,7 @@ make_expected_configs <- function(
       add_config(50, p, 0.1, distr, "independent", 0)
     }
   }
-  for (sig in c(0.1, 0.3, 0.5)) add_config(50, 30, sig, "normal", "independent", 0)
+  for (sig in c(0.1, 0.5, 1)) add_config(50, 30, sig, "normal", "independent", 0)
   for (p in dimension_grid) {
     add_config(50, p, 0.1, "normal", "common_amplitude", 1)
     add_config(50, p, 0.1, "normal", "common_signed", 0)
@@ -662,7 +662,7 @@ noise_plot <- ggplot(
 distribution_data <- plot_data[
   nbasis == plot_nbasis & weight_folds == plot_weight_folds &
     eigensystem == plot_eigensystem &
-    n == 50 & p == 30 & sig == 0.1 & dependence == "independent"
+    n == 50 & p == 50 & sig == 0.1 & dependence == "independent"
 ]
 distribution_plot <- ggplot(
   distribution_data,
@@ -676,7 +676,7 @@ distribution_plot <- ggplot(
   labs(
     title = paste(
       "Error vs. FPC-score distribution",
-      "Fixed: n = 50, p = q = 30, sigma = 0.1, independent scores",
+      "Fixed: n = 50, p = q = 50, sigma = 0.1, independent scores",
       nbasis_title,
       weight_folds_title,
       eigensystem_title,

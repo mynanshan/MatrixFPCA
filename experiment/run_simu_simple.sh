@@ -10,6 +10,7 @@ fi
 #   experiment/run_simu_simple.sh [max_seed] [min_seed] [max_parallel] [options]
 #   experiment/run_simu_simple.sh 100 1 100
 #   experiment/run_simu_simple.sh 200 101 100 --dry-run
+#   experiment/run_simu_simple.sh 100 1 100 --no-overwrite
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem ar1
 #   experiment/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
@@ -130,6 +131,7 @@ max_seed="${1:-50}"
 min_seed="${2:-1}"
 max_parallel="${3:-100}"
 dry_run=0
+no_overwrite=0
 eigensystem_arg="${MATFPCA_EIGENSYSTEM:-ar1}"
 nbasis_arg="${MATFPCA_NBASIS:-0}"
 weight_folds_arg="${MATFPCA_WEIGHT_FOLDS:-10}"
@@ -144,6 +146,10 @@ while (($#)); do
   case "$1" in
     --dry-run)
       dry_run=1
+      shift
+      ;;
+    --no-overwrite)
+      no_overwrite=1
       shift
       ;;
     --eigensystem)
@@ -256,6 +262,7 @@ declare -A seen_configs
 declare -A manifest_by_class
 declare -A class_task_count
 config_count=0
+skipped_existing_count=0
 
 DIMENSIONS=(20 50 100 150 200)
 DISTRIBUTIONS=(normal uniform beta32 t5)
@@ -327,6 +334,36 @@ init_manifest() {
     > "${manifest}"
 }
 
+result_file_for_config() {
+  local n="$1"
+  local p="$2"
+  local sigma="$3"
+  local distribution="$4"
+  local dependence="$5"
+  local dep_param="$6"
+  local eigensystem="$7"
+  local eigvec_set="$8"
+  local eigval_set="$9"
+  local rank_time="${10}"
+  local seed="${11}"
+  local nbasis_label="theory"
+
+  if (( nbasis_arg > 0 )); then
+    nbasis_label="${nbasis_arg}"
+    if (( nbasis_label < 3 )); then nbasis_label=3; fi
+    if (( nbasis_label > 51 )); then nbasis_label=51; fi
+  fi
+
+  local sigma_token="${sigma//[^[:alnum:]]/p}"
+  local dep_param_token="${dep_param//[^[:alnum:]]/p}"
+  local eigensystem_token="${eigensystem//[^[:alnum:]]/p}"
+  printf '%s/simu_n%s_p%s_sig%s_d%s_dep%s_dp%s_s2-4_nt51_nb%s_wf%s_cdrefined_r%s-%s-%s_eig%s_evc%s_evl%s_sd%s.csv\n' \
+    "${RESULTS_DIR}" "${n}" "${p}" "${sigma_token}" "${distribution}" \
+    "${dependence}" "${dep_param_token}" "${nbasis_label}" \
+    "${weight_folds_arg}" "${p}" "${p}" "${rank_time}" \
+    "${eigensystem_token}" "${eigvec_set}" "${eigval_set}" "${seed}"
+}
+
 for class in "${RESOURCE_CLASSES[@]}"; do
   init_manifest "${class}"
 done
@@ -358,6 +395,18 @@ add_config() {
 
     local seed
     for ((seed = min_seed; seed <= max_seed; seed++)); do
+      if (( no_overwrite )); then
+        local result_file
+        result_file="$(result_file_for_config \
+          "${n}" "${p}" "${sigma}" "${distribution}" "${dependence}" \
+          "${dep_param}" "${eigensystem}" "${eigvec_set}" "${eigval_set}" \
+          "${rank_time}" "${seed}")"
+        if [[ -f "${result_file}" ]]; then
+          skipped_existing_count=$((skipped_existing_count + 1))
+          continue
+        fi
+      fi
+
       printf "%03d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
         "${config_count}" "${seed}" \
         "${n}" "${p}" "${sigma}" "${distribution}" \
@@ -365,7 +414,6 @@ add_config() {
         "${nbasis_arg}" "${weight_folds_arg}" \
         "${eigensystem}" "${eigvec_set}" "${eigval_set}" "${rank_time}" >> "${manifest}"
     done
-    class_task_count["${class}"]=$((class_task_count["${class}"] + seed_count))
   done
 }
 
@@ -402,13 +450,22 @@ for p in "${DIMENSIONS[@]}"; do
   add_config 50 "${p}" 0.1 normal heavy_amplitude 1.5
 done
 
-task_count=$((config_count * seed_count))
+task_count=0
+for class in "${RESOURCE_CLASSES[@]}"; do
+  class_task_count["${class}"]=$(($(wc -l < "${manifest_by_class[${class}]}") - 1))
+  task_count=$((task_count + class_task_count["${class}"]))
+done
 echo "Configurations: ${config_count}"
 echo "Eigensystem argument: ${eigensystem_arg}"
 echo "Eigensystems: ${ACTIVE_EIGENSYSTEMS[*]}"
 echo "Temporal marginal basis dimension: ${nbasis_arg} (0 means automatic theory rule)"
 echo "Refined-weight cross-fitting folds: ${weight_folds_arg}"
 echo "Seed range: ${min_seed}-${max_seed} (${seed_count} seeds per configuration)"
+if (( no_overwrite )); then
+  echo "Existing-result policy: skip (${skipped_existing_count} tasks skipped)"
+else
+  echo "Existing-result policy: overwrite"
+fi
 echo "Array tasks: ${task_count}"
 for class in "${RESOURCE_CLASSES[@]}"; do
   echo "Manifest (${class}): ${manifest_by_class[${class}]}"
@@ -421,6 +478,11 @@ if (( dry_run )); then
   for class in "${RESOURCE_CLASSES[@]}"; do
     rm -f "${manifest_by_class[${class}]}"
   done
+  exit 0
+fi
+
+if (( task_count == 0 )); then
+  echo "All requested result files already exist; no jobs submitted."
   exit 0
 fi
 
