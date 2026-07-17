@@ -327,9 +327,14 @@ evaluate_covariance_fit <- function(fit, truth) {
 }
 
 evaluate_reconstruction <- function(fit, data, eig_true, scores_true) {
-  eig_hat <- eigen.matfcov(fit$C)
-  eig_hat <- trunc.matfeigen(eig_hat, verbose = FALSE)
-  scores_hat <- get_matfpca_scores(data, eig_hat)
+  eig_full <- eigen.matfcov(fit$C)
+  eig_hat <- trunc.matfeigen(eig_full, verbose = FALSE)
+  scores_hat <- get_matfpca_scores(
+    data,
+    eig_hat,
+    sig2 = fit$C$sig2,
+    K_grid = fit$C$K
+  )
 
   # Reconstruct one subject at a time to avoid materializing two potentially
   # very large n x p x q x nt tensors at once.

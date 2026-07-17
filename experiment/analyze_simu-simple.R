@@ -65,7 +65,8 @@ if (!"weight_folds" %in% names(res)) res[, weight_folds := 1]
 res[, nbasis := as.character(nbasis)]
 optional_metric_columns <- c(
   "iseKc", "reliseKc",
-  "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV"
+  "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
+  "mseX", "relmseX"
 )
 for (column in optional_metric_columns) {
   if (!column %in% names(res)) res[, (column) := NA_real_]
@@ -299,9 +300,13 @@ completion_by_setting[, completion_rate := completed_runs / expected_runs]
 setorder(completion_by_setting, config_id)
 
 # Stored errors are logarithms; convert them back before averaging.
-metric_columns <- c("relsseU", "relsseV", "reliseK", "reliseKc", "relsiseC")
+metric_columns <- c(
+  "relsseU", "relsseV", "reliseK", "reliseKc", "relsiseC", "relmseX"
+)
 diagnostic_metric_columns <- c("relsseGammaU", "relsseGammaV")
-absolute_metric_columns <- c("sseU", "sseV", "iseK", "iseKc", "sseGammaU", "sseGammaV")
+absolute_metric_columns <- c(
+  "sseU", "sseV", "iseK", "iseKc", "sseGammaU", "sseGammaV", "mseX"
+)
 for (column in c(metric_columns, diagnostic_metric_columns, absolute_metric_columns)) {
   res[, paste0(column, "_raw") := exp(get(column))]
 }
@@ -346,6 +351,8 @@ summary_long <- res[
     iseKc_sd = sd_metric(iseKc_raw),
     relsiseC_mean = mean_metric(relsiseC_raw),
     relsiseC_sd = sd_metric(relsiseC_raw),
+    relmseX_mean = mean_metric(relmseX_raw),
+    relmseX_sd = sd_metric(relmseX_raw),
     relsseGammaU_mean = mean_metric(relsseGammaU_raw),
     relsseGammaU_sd = sd_metric(relsseGammaU_raw),
     relsseGammaV_mean = mean_metric(relsseGammaV_raw),
@@ -371,6 +378,7 @@ summary_wide <- dcast(
     "reliseK_mean", "reliseK_sd", "iseK_mean", "iseK_sd",
     "reliseKc_mean", "reliseKc_sd", "iseKc_mean", "iseKc_sd",
     "relsiseC_mean", "relsiseC_sd",
+    "relmseX_mean", "relmseX_sd",
     "relsseGammaU_mean", "relsseGammaU_sd",
     "relsseGammaV_mean", "relsseGammaV_sd"
   )
@@ -405,7 +413,7 @@ fwrite(completion_by_setting, file.path(output_dir, "simulation_completion_by_se
 fwrite(missing_runs, file.path(output_dir, "simulation_missing_runs.csv"))
 fwrite(missing_method_rows, file.path(output_dir, "simulation_missing_method_rows.csv"))
 n_method_rows <- nrow(res)
-metric_columns <- c("relsseU", "relsseV", "reliseK", "relsiseC")
+metric_columns <- c("relsseU", "relsseV", "reliseK", "relsiseC", "relmseX")
 raw_metric_columns <- paste0(metric_columns, "_raw")
 for (column in metric_columns) {
   raw_column <- paste0(column, "_raw")
@@ -474,11 +482,15 @@ long <- melt(
   value.name = "error"
 )
 metric_labels <- c(
-  relsseU_raw = "U relative Frobenius",
-  relsseV_raw = "V relative Frobenius",
-  reliseK_raw = "K relative ISE",
-  relsiseC_raw = "Full covariance"
+  relsseU_raw = "U rel. SSE",
+  relsseV_raw = "V rel. SSE",
+  reliseK_raw = "K rel. ISE",
+  relsiseC_raw = "Full cov. rel. SISE",
+  # The common time-grid integration weight cancels in this relative error.
+  relmseX_raw = "X(t) rel. SISE"
 )
+covariance_metric_labels <- unname(metric_labels[names(metric_labels) != "relmseX_raw"])
+dimension_metric_labels <- unname(metric_labels)
 long[, metric := factor(
   metric_key,
   levels = names(metric_labels),
@@ -488,18 +500,15 @@ long[, metric := factor(
 # Uniform remains in the CSV summaries but is intentionally omitted from plots.
 long <- long[distr != "uniform"]
 setting_columns <- setdiff(id_columns, c("seed", "weight", "weight_label"))
-mean_data <- long[
+summary_data <- long[
   ,
   .(
-    mean_error = mean(error, na.rm = TRUE),
-    se_error = sd(error, na.rm = TRUE) / sqrt(sum(!is.na(error)))
+    median_error = median(error, na.rm = TRUE),
+    lower = quantile(error, probs = 0.025, na.rm = TRUE),
+    upper = quantile(error, probs = 0.975, na.rm = TRUE)
   ),
   by = c(setting_columns, "metric", "weight_label")
 ]
-mean_data[, `:=`(
-  lower = mean_error * exp(-1.96 * se_error / mean_error),
-  upper = mean_error * exp(1.96 * se_error / mean_error)
-)]
 
 difference_id <- c("seed", setting_columns, "metric")
 difference_formula <- as.formula(paste(
@@ -547,11 +556,11 @@ draw_mean_panel <- function(
       border = NA, col = method_fills[[method]]
     )
     lines(
-      values[[x_var]], values$mean_error,
+      values[[x_var]], values$median_error,
       col = method_colors[[method]], lwd = 1.6
     )
     points(
-      values[[x_var]], values$mean_error,
+      values[[x_var]], values$median_error,
       col = method_colors[[method]], pch = 16, cex = 0.9
     )
   }
@@ -571,8 +580,8 @@ draw_mean_panel <- function(
 draw_difference_panel <- function(data, x_var, show_x = FALSE, show_y = TRUE) {
   x <- sort(unique(data[[x_var]]))
   groups <- lapply(x, function(value) data[get(x_var) == value, difference])
-  values <- unlist(groups, use.names = FALSE)
-  ylim <- range(c(0, values), finite = TRUE)
+  boxplot_stats <- boxplot(groups, plot = FALSE)
+  ylim <- range(c(0, boxplot_stats$stats), finite = TRUE)
   padding <- max(diff(ylim) * 0.06, .Machine$double.eps)
   ylim <- ylim + c(-padding, padding)
   plot(
@@ -580,13 +589,13 @@ draw_difference_panel <- function(data, x_var, show_x = FALSE, show_y = TRUE) {
     axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
   )
   grid(col = "grey90", lty = 1)
-  abline(h = 0, col = "grey45", lwd = 0.8)
+  abline(h = 0, col = "#2C7FB8", lwd = 1.3)
   boxplot(
     groups, at = seq_along(x), add = TRUE, axes = FALSE,
     boxwex = 0.55, col = "grey82", border = "grey25",
     medcol = "grey10", medlwd = 1.3,
     whiskcol = "grey35", staplecol = "grey35",
-    outcol = "grey45", outpch = 16, outcex = 0.5
+    outline = FALSE
   )
   box(col = "grey30")
   if (show_x) {
@@ -598,42 +607,97 @@ draw_difference_panel <- function(data, x_var, show_x = FALSE, show_y = TRUE) {
   if (show_y) axis(2, las = 1, cex.axis = 0.88)
 }
 
-add_outer_annotations <- function(x_label, row_labels = NULL) {
+plot_region_device_coordinates <- function() {
+  figure_region <- par("fig")
+  plot_region <- par("plt")
+  outer_region <- par("omd")
+  inner_coordinates <- c(
+    figure_region[[1L]] + plot_region[[1L]] * diff(figure_region[1L:2L]),
+    figure_region[[1L]] + plot_region[[2L]] * diff(figure_region[1L:2L]),
+    figure_region[[3L]] + plot_region[[3L]] * diff(figure_region[3L:4L]),
+    figure_region[[3L]] + plot_region[[4L]] * diff(figure_region[3L:4L])
+  )
+  c(
+    outer_region[[1L]] + inner_coordinates[1L:2L] *
+      diff(outer_region[1L:2L]),
+    outer_region[[3L]] + inner_coordinates[3L:4L] *
+      diff(outer_region[3L:4L])
+  )
+}
+
+add_outer_annotations <- function(
+  x_label, row_labels = NULL, row_y = NULL,
+  x_label_y = 0.018, row_label_x = 0.992
+) {
   par(
     fig = c(0, 1, 0, 1), mar = rep(0, 4), oma = rep(0, 4),
     new = TRUE
   )
   plot.new()
+  plot.window(
+    xlim = c(0, 1), ylim = c(0, 1),
+    xaxs = "i", yaxs = "i"
+  )
   legend(
     "top", legend = names(method_colors), col = method_colors,
     lty = 1, lwd = 2, pch = 16, pt.cex = 0.9,
     horiz = TRUE, bty = "n", cex = 1.05, inset = 0.03
   )
-  text(0.5, 0.018, x_label, cex = 1.05)
+  text(0.5, x_label_y, x_label, cex = 1.05)
   if (!is.null(row_labels)) {
-    panel_top <- 0.88
-    panel_bottom <- 0.09
-    row_y <- panel_top -
-      (seq_along(row_labels) - 0.5) * (panel_top - panel_bottom) /
-        length(row_labels)
+    if (is.null(row_y)) {
+      panel_top <- 0.88
+      panel_bottom <- 0.09
+      row_y <- panel_top -
+        (seq_along(row_labels) - 0.5) * (panel_top - panel_bottom) /
+          length(row_labels)
+    }
     text(
-      0.992, row_y, row_labels,
+      row_label_x, row_y, row_labels,
       srt = -90, adj = 0.5, cex = 1.02
     )
   }
 }
 
+equal_plot_row_heights <- function(
+  device_height, outer_margins, bottom_margins, top_margins
+) {
+  line_height <- par("csi") * par("mex")
+  inner_height <- device_height -
+    sum(outer_margins[c(1L, 3L)]) * line_height
+  margin_heights <- (bottom_margins + top_margins) * line_height
+  plot_height <- (inner_height - sum(margin_heights)) /
+    length(margin_heights)
+  if (plot_height <= 0) {
+    stop("The plotting device is too short for the requested panel margins.")
+  }
+  plot_height + margin_heights
+}
+
 plot_condition_grid <- function(
   means, differences, condition_var, condition_values, condition_labels,
-  x_var, x_label, filename, width = 11.5, height = 7.2
+  x_var, x_label, filename, metrics = dimension_metric_labels,
+  width = 11.5, height = 8.4
 ) {
-  metrics <- levels(long$metric)
   nrow <- length(metrics)
   ncol <- 2L * length(condition_values)
+  outer_margins <- c(3.2, 2.8, 4.2, 4.4)
+  bottom_margins <- c(rep(0.9, nrow - 1L), 2.8)
+  top_margins <- c(2.5, rep(0.6, nrow - 1L))
   pdf(file.path(output_dir, filename), width = width, height = height)
   on.exit(dev.off())
-  layout(matrix(seq_len(nrow * ncol), nrow = nrow, byrow = TRUE))
-  par(oma = c(3.2, 2.8, 4.2, 4.4))
+  par(oma = outer_margins)
+  panel_layout <- matrix(seq_len(nrow * ncol), nrow = nrow, byrow = TRUE)
+  # Establish the automatic layout text scaling before converting margin
+  # lines to inches; dense layouts reduce csi and therefore margin heights.
+  layout(panel_layout)
+  row_heights <- equal_plot_row_heights(
+    height, outer_margins, bottom_margins, top_margins
+  )
+  layout(panel_layout, heights = row_heights)
+  row_centers <- numeric(nrow)
+  chart_bottom <- NA_real_
+  chart_right <- NA_real_
   for (row in seq_along(metrics)) {
     row_mean_data <- means[
       metric == metrics[[row]] & get(condition_var) %in% condition_values
@@ -654,25 +718,48 @@ plot_condition_grid <- function(
         mean_subset, x_var, show_x = bottom, show_y = TRUE,
         ylim = shared_mean_ylim
       )
-      if (row == 1L) title(main = paste(condition_label, "Mean error", sep = "\n"), cex.main = 0.96)
+      if (condition_index == 1L) {
+        panel_coordinates <- plot_region_device_coordinates()
+        row_centers[[row]] <- mean(panel_coordinates[3L:4L])
+        if (bottom) chart_bottom <- panel_coordinates[[3L]]
+      }
+      if (row == 1L) title(main = paste(condition_label, "Median error", sep = "\n"), cex.main = 0.96)
 
       par(mar = c(if (bottom) 2.8 else 0.9, 3.2, if (row == 1L) 2.5 else 0.6, 0.5))
       draw_difference_panel(difference_subset, x_var, show_x = bottom, show_y = TRUE)
+      if (condition_index == length(condition_values)) {
+        chart_right <- plot_region_device_coordinates()[[2L]]
+      }
       if (row == 1L) title(main = paste(condition_label, "Identity - Refined", sep = "\n"), cex.main = 0.96)
     }
   }
-  add_outer_annotations(x_label, metrics)
+  line_height <- par("csi") * par("mex")
+  add_outer_annotations(
+    x_label, metrics, row_y = row_centers,
+    x_label_y = chart_bottom - 3.1 * line_height / par("din")[[2L]],
+    row_label_x = chart_right + line_height / par("din")[[1L]]
+  )
 }
 
 plot_metric_grid <- function(
   means, differences, x_var, x_label, filename, width = 8.6, height = 6.4,
-  categorical_x = FALSE
+  categorical_x = FALSE, metrics = covariance_metric_labels
 ) {
-  metrics <- levels(long$metric)
+  nrow <- 2L
+  outer_margins <- c(3.2, 1.8, 4.2, 1.2)
+  bottom_margins <- c(0.9, 2.8)
+  top_margins <- rep(2.6, nrow)
   pdf(file.path(output_dir, filename), width = width, height = height)
   on.exit(dev.off())
-  layout(matrix(seq_len(8L), nrow = 2L, byrow = TRUE))
-  par(oma = c(3.2, 1.8, 4.2, 1.2))
+  par(oma = outer_margins)
+  panel_layout <- matrix(
+    seq_len(2L * length(metrics)), nrow = nrow, byrow = TRUE
+  )
+  layout(panel_layout)
+  row_heights <- equal_plot_row_heights(
+    height, outer_margins, bottom_margins, top_margins
+  )
+  layout(panel_layout, heights = row_heights)
   for (index in seq_along(metrics)) {
     row <- if (index <= 2L) 1L else 2L
     bottom <- row == 2L
@@ -698,7 +785,7 @@ plot_metric_grid <- function(
       mean_subset, panel_x_var,
       show_x = bottom && !categorical_x, show_y = TRUE
     )
-    title(main = paste(metric_name, "Mean error", sep = "\n"), cex.main = 0.96)
+    title(main = paste(metric_name, "Median error", sep = "\n"), cex.main = 0.96)
     if (bottom && categorical_x) {
       axis(
         1, at = seq_along(levels_x), labels = levels_x,
@@ -723,7 +810,7 @@ plot_metric_grid <- function(
 }
 
 dimension_grid <- c(20, 50, 100, 150, 200)
-dimension_means <- mean_data[
+dimension_means <- summary_data[
   n == 50 & sig == 0.1 & dependence == "independent" & p %in% dimension_grid
 ]
 dimension_differences <- difference_data[
@@ -736,7 +823,7 @@ plot_condition_grid(
   "error_vs_dimension_n50_sig0p1_independent.pdf"
 )
 
-dependent_means <- mean_data[
+dependent_means <- summary_data[
   n == 50 & sig == 0.1 & distr == "normal" & dependence != "independent" &
     p %in% dimension_grid
 ]
@@ -753,7 +840,7 @@ plot_condition_grid(
   "error_vs_dimension_dependent_n50_sig0p1_normal.pdf"
 )
 
-sample_means <- mean_data[
+sample_means <- summary_data[
   p == 30 & sig == 0.1 & distr == "normal" & dependence == "independent"
 ]
 sample_differences <- difference_data[
@@ -764,7 +851,7 @@ plot_metric_grid(
   "error_vs_sample_size_p30_sig0p1_normal_independent.pdf"
 )
 
-noise_means <- mean_data[
+noise_means <- summary_data[
   n == 50 & p == 30 & distr == "normal" & dependence == "independent"
 ]
 noise_differences <- difference_data[

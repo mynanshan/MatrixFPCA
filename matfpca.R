@@ -1618,38 +1618,78 @@ fit_matfcov <- function(
 get_matfpca_scores <- function(
   data,
   eig,
+  sig2 = 0,
+  K_grid = NULL,
   nugget = 1e-8
 ) {
+  # Best linear prediction of retained product-FPC scores.
+  # Under Gaussian scores/errors this is also the conditional expectation.
   n <- count_subj(data)
   I <- ncol(eig$funcs$Phi)
   J <- ncol(eig$funcs$Psi)
   K <- ncol(eig$funcs$Theta)
 
-  scores <- rTensor::as.tensor(array(NA, dim = c(n, I, J, K)))
+  lam_phi <- eig$values$lam_phi
+  lam_psi <- eig$values$lam_psi
   lam_theta <- eig$values$lam_theta
+  stopifnot(length(lam_phi) == I, length(lam_psi) == J, length(lam_theta) == K)
+  stopifnot(is.numeric(sig2), length(sig2) == 1L, is.finite(sig2), sig2 >= 0)
+  stopifnot(is.numeric(nugget), length(nugget) == 1L, is.finite(nugget), nugget >= 0)
+
+  # The prediction denominator should use the full temporal covariance, not
+  # only the retained-rank numerator. This accounts for omitted temporal modes.
+  if (is.null(K_grid)) {
+    K_grid <- eig$funcs$Theta %*%
+      t(sweep(eig$funcs$Theta, 2, lam_theta, "*"))
+  }
+  stopifnot(
+    is.matrix(K_grid),
+    nrow(K_grid) == length(data$t_grid),
+    ncol(K_grid) == length(data$t_grid)
+  )
+  K_grid <- sym(K_grid)
+
+  scores <- rTensor::as.tensor(array(NA_real_, dim = c(n, I, J, K)))
 
   scores_list <- foreach::foreach(
     i = seq_len(n),
     .combine = c,
     .multicombine = TRUE
-  ) %do%
-    {
-      Thetai <- eig$funcs$Theta[data$t_idx_list[[i]], , drop = F]
-      mi <- length(data$t_idx_list[[i]])
-      Ki_inv <- solve(
-        Thetai %*% t(sweep(Thetai, 2, lam_theta, "*")) + diag(nugget, mi, mi)
-      )
-      scores_i <- rTensor::ttl(
-        get_subj_tnsr(data, i),
-        list(
-          t(eig$funcs$Phi),
-          t(eig$funcs$Psi),
-          t(sweep(Thetai, 2, lam_theta, "*")) %*% Ki_inv
-        ),
-        1:3
-      )
-      list(scores_i)
+  ) %do% {
+    tid <- data$t_idx_list[[i]]
+    Thetai <- eig$funcs$Theta[tid, , drop = FALSE]
+    mi <- length(tid)
+    Ki <- sym(K_grid[tid, tid, drop = FALSE])
+
+    # Spatial projection gives an I x J x mi tensor of visit vectors.
+    projected <- rTensor::ttl(
+      get_subj_tnsr(data, i),
+      list(t(eig$funcs$Phi), t(eig$funcs$Psi)),
+      ms = c(1, 2)
+    )@data
+
+    # Diagonalize Ki once; each spatial pair differs only through the ridge
+    # sig2 / (lambda_U,j lambda_V,k).
+    ee_Ki <- eigen(Ki, symmetric = TRUE)
+    Q <- ee_Ki$vectors
+    d <- pmax(ee_Ki$values, 0)
+    Qt <- t(Q)
+    score_numerator <- t(sweep(Thetai, 2, lam_theta, "*"))
+
+    scores_i <- array(0, dim = c(I, J, K))
+    for (j in seq_len(I)) {
+      for (k in seq_len(J)) {
+        spatial_signal <- lam_phi[[j]] * lam_psi[[k]]
+        if (!is.finite(spatial_signal) || spatial_signal <= 0) next
+
+        ridge_jk <- max(nugget, sig2 / spatial_signal)
+        z_jk <- projected[j, k, ]
+        Ainv_z <- Q %*% ((Qt %*% z_jk) / (d + ridge_jk))
+        scores_i[j, k, ] <- as.numeric(score_numerator %*% Ainv_z)
+      }
     }
+    list(rTensor::as.tensor(scores_i))
+  }
 
   for (i in seq_len(n)) {
     scores[i, , , ] <- scores_list[[i]]
