@@ -327,9 +327,6 @@ match_signs.matfeigen = function(eig, eig0) {
 }
 
 .trunc.matfeigen = function(eig, I, J, K) {
-  p = nrow(eig$Phi)
-  q = nrow(eig$Psi)
-  nt = nrow(eig$Theta)
   obj = create_matrix_eigobj(
     eig$funcs$Phi[, 1:I, drop=FALSE],
     eig$funcs$Psi[, 1:J, drop=FALSE],
@@ -342,58 +339,108 @@ match_signs.matfeigen = function(eig, eig0) {
   obj
 }
 
-trunc.matfeigen = function(
-    eig, pve=0.95, I=NULL, J=NULL, K=NULL, verbose = TRUE
-  ) {
-  stopifnot(is(eig, "matfeigen"))
-  stopifnot(pve <= 1 && pve > 0)
-  p = nrow(eig$funcs$Phi)
-  q = nrow(eig$funcs$Psi)
-  nt = nrow(eig$funcs$Theta)
-  rmax_phi = ncol(eig$funcs$Phi)
-  rmax_psi = ncol(eig$funcs$Psi)
-  rmax_theta = ncol(eig$funcs$Theta)
-  stopifnot(is.null(I) || (is.integer(I) && I <= rmax_phi))
-  stopifnot(is.null(J) || (is.integer(J) && J <= rmax_psi))
-  stopifnot(is.null(K) || (is.integer(K) && K <= rmax_theta))
-  
-  # if given rank
-  if (!is.null(I) && !is.null(J) && !is.null(K)) {
-    return(.trunc.matfeigen(eig, I, J, K))
+.select_temporal_rank = function(lam_theta, pve) {
+  # Estimated covariance operators can have small negative eigenvalues.
+  # PVE is defined using the represented nonnegative temporal spectrum.
+  lam_theta = pmax(as.vector(lam_theta), 0)
+  total_var = sum(lam_theta)
+  if (!is.finite(total_var) || total_var <= 0) {
+    stop("The temporal eigensystem has no positive variance.")
   }
-  
-  # if given PVE
-  r = rep(1, 3) # rank of the three dim
-  eigval_tnsr = get_eigval_tnsr.matfeigval(eig$values)
+  which(cumsum(lam_theta) / total_var >= pve)[1]
+}
+
+.select_joint_ranks = function(eigval, rmax, pve) {
+  # Legacy rule: greedily grow a row-column-time rank box according to the
+  # largest marginal increase in explained product variance.
+  r = rep(1L, 3)
+  eigval_tnsr = get_eigval_tnsr.matfeigval(eigval)
   total_var = sum(eigval_tnsr)
-  curr_pve = eigval_tnsr[1,1,1] / total_var
-  # TODO: allow user to partially specify (I, J, K)
+  if (!is.finite(total_var) || total_var <= 0) {
+    stop("The product eigensystem has no positive total variance.")
+  }
+  curr_pve = eigval_tnsr[1, 1, 1] / total_var
+
   while (curr_pve < pve) {
-    if (all(r >= c(rmax_phi, rmax_psi, rmax_theta))) {
-      stop("Max rank reached. Something wrong happened")
+    if (all(r >= rmax)) {
+      stop("Maximum rank reached before attaining the requested PVE.")
     }
     var_incrs = c(
       ifelse(
-        r[1] >= rmax_phi, 0,
+        r[1] >= rmax[1], 0,
         sum(eigval_tnsr[r[1] + 1, 1:r[2], 1:r[3]])
       ),
       ifelse(
-        r[2] >= rmax_psi, 0,
+        r[2] >= rmax[2], 0,
         sum(eigval_tnsr[1:r[1], r[2] + 1, 1:r[3]])
       ),
       ifelse(
-        r[3] >= rmax_theta, 0,
+        r[3] >= rmax[3], 0,
         sum(eigval_tnsr[1:r[1], 1:r[2], r[3] + 1])
       )
     )
     idx = which.max(var_incrs)
-    r[idx] = r[idx] + 1
-    curr_pve = sum(eigval_tnsr[1:r[1], 1:r[2], 1:r[3]]) / total_var
+    r[idx] = r[idx] + 1L
+    curr_pve = sum(
+      eigval_tnsr[1:r[1], 1:r[2], 1:r[3], drop = FALSE]
+    ) / total_var
   }
-  
+  r
+}
+
+trunc.matfeigen = function(
+    eig, pve=0.95, I=NULL, J=NULL, K=NULL, verbose = TRUE,
+    pve_rule = c("temporal", "joint")
+  ) {
+  stopifnot(is(eig, "matfeigen"))
+  if (!is.numeric(pve) || length(pve) != 1L || !is.finite(pve) ||
+      pve <= 0 || pve > 1) {
+    stop("pve must be one finite number in (0, 1].")
+  }
+  pve_rule = match.arg(pve_rule)
+  rmax_phi = ncol(eig$funcs$Phi)
+  rmax_psi = ncol(eig$funcs$Psi)
+  rmax_theta = ncol(eig$funcs$Theta)
+  rmax = c(rmax_phi, rmax_psi, rmax_theta)
+
+  ranks = list(I = I, J = J, K = K)
+  valid_rank = function(rank, upper) {
+    is.numeric(rank) && length(rank) == 1L && is.finite(rank) &&
+      rank == as.integer(rank) && rank >= 1L && rank <= upper
+  }
+  for (d in seq_along(ranks)) {
+    if (!is.null(ranks[[d]]) && !valid_rank(ranks[[d]], rmax[d])) {
+      stop(
+        names(ranks)[d], " must be an integer between 1 and ", rmax[d], "."
+      )
+    }
+  }
+
+  # Explicit ranks take precedence over PVE selection.
+  supplied = !vapply(ranks, is.null, logical(1))
+  if (all(supplied)) {
+    return(.trunc.matfeigen(eig, as.integer(I), as.integer(J), as.integer(K)))
+  }
+  if (any(supplied)) {
+    stop("I, J, and K must either all be supplied or all be NULL.")
+  }
+
+  if (pve_rule == "temporal") {
+    r = c(
+      rmax_phi,
+      rmax_psi,
+      .select_temporal_rank(eig$values$lam_theta, pve)
+    )
+  } else {
+    r = .select_joint_ranks(eig$values, rmax, pve)
+  }
+
   if (verbose) {
-    cat("Selected rank:", "Row =", r[1], "Col =", r[2], "Time =", r[3], "\n")
+    cat(
+      paste0("Selected rank (", pve_rule, " PVE rule):"),
+      "Row =", r[1], "Col =", r[2], "Time =", r[3], "\n"
+    )
   }
-  
+
   .trunc.matfeigen(eig, r[1], r[2], r[3])
 }
