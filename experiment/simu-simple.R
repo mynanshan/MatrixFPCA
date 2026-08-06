@@ -338,23 +338,47 @@ evaluate_reconstruction <- function(fit, data, eig_true, scores_true) {
 
   # Reconstruct one subject at a time to avoid materializing two potentially
   # very large n x p x q x nt tensors at once.
-  squared_error <- 0
-  squared_truth <- 0
-  n_values <- 0
-  for (i in seq_len(count_subj(data))) {
+  n_subjects <- count_subj(data)
+  subject_errors <- data.table::data.table(
+    subject = seq_len(n_subjects),
+    n_observed_visits = lengths(data$t_idx_list),
+    sseX = numeric(n_subjects),
+    truth_sseX = numeric(n_subjects),
+    n_values = integer(n_subjects)
+  )
+  for (i in seq_len(n_subjects)) {
     scores_hat_i <- as.tensor(scores_hat@data[i, , , , drop = FALSE])
     scores_true_i <- as.tensor(scores_true@data[i, , , , drop = FALSE])
     X_hat_i <- recover_matfdata(eig_hat$funcs, scores_hat_i)@data
     X_true_i <- recover_matfdata(eig_true$funcs, scores_true_i)@data
 
-    squared_error <- squared_error + sum((X_hat_i - X_true_i)^2)
-    squared_truth <- squared_truth + sum(X_true_i^2)
-    n_values <- n_values + length(X_true_i)
+    subject_errors[i, `:=`(
+      sseX = sum((X_hat_i - X_true_i)^2),
+      truth_sseX = sum(X_true_i^2),
+      n_values = length(X_true_i)
+    )]
   }
+  subject_errors[, relsseX := sseX / truth_sseX]
+  subject_quantiles <- quantile(
+    subject_errors$relsseX,
+    probs = c(0.025, 0.25, 0.75, 0.975),
+    names = FALSE
+  )
 
-  c(
-    mseX = squared_error / n_values,
-    relmseX = squared_error / squared_truth
+  list(
+    metrics = c(
+      mseX = sum(subject_errors$sseX) / sum(subject_errors$n_values),
+      # Kept for compatibility: this is a pooled relative SSE, not a mean.
+      relmseX = sum(subject_errors$sseX) / sum(subject_errors$truth_sseX),
+      relsseX_subject_mean = mean(subject_errors$relsseX),
+      relsseX_subject_median = median(subject_errors$relsseX),
+      relsseX_subject_q025 = subject_quantiles[[1L]],
+      relsseX_subject_q25 = subject_quantiles[[2L]],
+      relsseX_subject_q75 = subject_quantiles[[3L]],
+      relsseX_subject_q975 = subject_quantiles[[4L]],
+      relsseX_subject_max = max(subject_errors$relsseX)
+    ),
+    subject_errors = subject_errors
   )
 }
 
@@ -374,10 +398,10 @@ fit_results <- lapply(weight_schemes, function(scheme) {
   })
   runtime <- unname(fit_timing[["elapsed"]])
   selected_nbasis <- fit$temporal_fit$nbasis
-  metrics <- c(
-    evaluate_covariance_fit(fit, cov_true),
-    evaluate_reconstruction(fit, data, eig_true, scores_true)
+  reconstruction <- evaluate_reconstruction(
+    fit, data, eig_true, scores_true
   )
+  metrics <- c(evaluate_covariance_fit(fit, cov_true), reconstruction$metrics)
   cat(
     ">>>>> Weighting scheme: ", scheme, "\n",
     "Runtime (seconds): ", runtime, "\n",
@@ -394,10 +418,22 @@ fit_results <- lapply(weight_schemes, function(scheme) {
     "Rel. SSE (raw Gamma_U): ", metrics[["relsseGammaU"]], "\n",
     "Rel. SSE (raw Gamma_V): ", metrics[["relsseGammaV"]], "\n",
     "MSE (X): ", metrics[["mseX"]], "\n",
-    "Rel. MSE (X): ", metrics[["relmseX"]], "\n",
+    "Pooled rel. SSE (X): ", metrics[["relmseX"]], "\n",
+    "Mean subject rel. SSE (X): ", metrics[["relsseX_subject_mean"]], "\n",
+    "Median subject rel. SSE (X): ", metrics[["relsseX_subject_median"]], "\n",
+    "Subject rel. SSE (X), 2.5% / 97.5%: ",
+    metrics[["relsseX_subject_q025"]], " / ",
+    metrics[["relsseX_subject_q975"]], "\n",
+    "Maximum subject rel. SSE (X): ",
+    metrics[["relsseX_subject_max"]], "\n",
     sep = ""
   )
-  list(fit = fit, metrics = metrics, runtime = runtime)
+  list(
+    fit = fit,
+    metrics = metrics,
+    subject_errors = reconstruction$subject_errors,
+    runtime = runtime
+  )
 })
 names(fit_results) <- weight_schemes
 
@@ -530,7 +566,11 @@ if (ifsave) {
     "relsseU", "relsseV", "reliseK", "relsiseC",
     "sig2_true", "sig2_hat", "errSig2", "sseSig2",
     "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
-    "mseX", "relmseX", "runtime"
+    "mseX", "relmseX",
+    "relsseX_subject_mean", "relsseX_subject_median",
+    "relsseX_subject_q025", "relsseX_subject_q25",
+    "relsseX_subject_q75", "relsseX_subject_q975",
+    "relsseX_subject_max", "runtime"
   )
 
   formatter <- function(x, digits = 7, logarithm = TRUE) {
@@ -565,11 +605,64 @@ if (ifsave) {
       formatter(metrics[["relsseGammaV"]]),
       formatter(metrics[["mseX"]]),
       formatter(metrics[["relmseX"]]),
+      formatter(metrics[["relsseX_subject_mean"]]),
+      formatter(metrics[["relsseX_subject_median"]]),
+      formatter(metrics[["relsseX_subject_q025"]]),
+      formatter(metrics[["relsseX_subject_q25"]]),
+      formatter(metrics[["relsseX_subject_q75"]]),
+      formatter(metrics[["relsseX_subject_q975"]]),
+      formatter(metrics[["relsseX_subject_max"]]),
       formatter(runtime, logarithm = FALSE)
     ), header))
   })
-  # Publish completed output atomically so interrupted jobs do not leave a
-  # zero-byte file that looks like a finished simulation result.
+  subject_error_dir <- file.path(dir_path, "subject_errors")
+  dir.create(subject_error_dir, recursive = TRUE, showWarnings = FALSE)
+  subject_error_name <- paste0("xerror", file_id, ".csv")
+  subject_error_path <- file.path(subject_error_dir, subject_error_name)
+  subject_error_rows <- data.table::rbindlist(lapply(
+    weight_schemes,
+    function(scheme) {
+      errors <- data.table::copy(fit_results[[scheme]]$subject_errors)
+      errors[, `:=`(
+        seed = seed,
+        weight = scheme,
+        n = n,
+        p = p,
+        q = q,
+        sig = sig,
+        distr = scores_distr,
+        dependence = score_dependence,
+        dependence_param = dependence_param
+      )]
+      data.table::setcolorder(
+        errors,
+        c(
+          "seed", "weight", "subject", "n", "p", "q", "sig", "distr",
+          "dependence", "dependence_param", "n_observed_visits", "sseX",
+          "truth_sseX", "n_values", "relsseX"
+        )
+      )
+      errors
+    }
+  ))
+  subject_temp_path <- tempfile(
+    pattern = paste0(".", subject_error_name, "."),
+    tmpdir = subject_error_dir
+  )
+  tryCatch(
+    data.table::fwrite(subject_error_rows, file = subject_temp_path),
+    error = function(e) {
+      unlink(subject_temp_path)
+      stop(e)
+    }
+  )
+  if (!file.rename(subject_temp_path, subject_error_path)) {
+    unlink(subject_temp_path)
+    stop("Could not publish subject-level reconstruction errors: ", subject_error_path)
+  }
+
+  # Publish the compact result last: it acts as the completion marker, so a
+  # completed run always has its subject-level reconstruction record as well.
   temp_path <- tempfile(
     pattern = paste0(".", file_name, "."),
     tmpdir = dir_path

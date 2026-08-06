@@ -490,7 +490,10 @@ metric_labels <- c(
   relmseX_raw = "X(t) rel. SISE"
 )
 covariance_metric_labels <- unname(metric_labels[names(metric_labels) != "relmseX_raw"])
-dimension_metric_labels <- unname(metric_labels)
+dimension_metric_labels <- covariance_metric_labels
+# The preceding five-row dimension plots were 8.4 inches high.  This four-row
+# height preserves their 1.18632-inch inner panel height under the same margins.
+dimension_plot_height <- 7.01568
 long[, metric := factor(
   metric_key,
   levels = names(metric_labels),
@@ -677,7 +680,7 @@ equal_plot_row_heights <- function(
 plot_condition_grid <- function(
   means, differences, condition_var, condition_values, condition_labels,
   x_var, x_label, filename, metrics = dimension_metric_labels,
-  width = 11.5, height = 8.4
+  width = 11.5, height = dimension_plot_height
 ) {
   nrow <- length(metrics)
   ncol <- 2L * length(condition_values)

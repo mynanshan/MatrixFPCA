@@ -1620,10 +1620,15 @@ get_matfpca_scores <- function(
   eig,
   sig2 = 0,
   K_grid = NULL,
-  nugget = 1e-8
+  nugget = 1e-8,
+  inverse_strategy = c("auto", "ginv", "ridge"),
+  ginv_tol = 1e-3
 ) {
   # Best linear prediction of retained product-FPC scores.
   # Under Gaussian scores/errors this is also the conditional expectation.
+  # "auto" uses a rank-truncated generalized inverse at exactly zero noise and
+  # the usual ridge inverse at positive noise. "ginv" and "ridge" force the
+  # corresponding strategy; ginv_tol is relative to the largest eigenvalue.
   n <- count_subj(data)
   I <- ncol(eig$funcs$Phi)
   J <- ncol(eig$funcs$Psi)
@@ -1632,9 +1637,19 @@ get_matfpca_scores <- function(
   lam_phi <- eig$values$lam_phi
   lam_psi <- eig$values$lam_psi
   lam_theta <- eig$values$lam_theta
+  inverse_strategy <- match.arg(inverse_strategy)
   stopifnot(length(lam_phi) == I, length(lam_psi) == J, length(lam_theta) == K)
   stopifnot(is.numeric(sig2), length(sig2) == 1L, is.finite(sig2), sig2 >= 0)
   stopifnot(is.numeric(nugget), length(nugget) == 1L, is.finite(nugget), nugget >= 0)
+  if (!is.numeric(ginv_tol) || length(ginv_tol) != 1L ||
+      !is.finite(ginv_tol) || ginv_tol < 0 || ginv_tol >= 1) {
+    stop("ginv_tol must be one finite number in [0, 1).")
+  }
+  selected_inverse <- if (inverse_strategy == "auto") {
+    if (sig2 == 0) "ginv" else "ridge"
+  } else {
+    inverse_strategy
+  }
 
   # The prediction denominator should use the full temporal covariance, not
   # only the retained-rank numerator. This accounts for omitted temporal modes.
@@ -1684,7 +1699,25 @@ get_matfpca_scores <- function(
 
         ridge_jk <- max(nugget, sig2 / spatial_signal)
         z_jk <- projected[j, k, ]
-        Ainv_z <- Q %*% ((Qt %*% z_jk) / (d + ridge_jk))
+        denominator <- if (selected_inverse == "ginv") {
+          # Match ginv_spd(), which adds its ridge before PSD truncation.
+          pmax(ee_Ki$values + ridge_jk, 0)
+        } else {
+          d + ridge_jk
+        }
+        inverse_filter <- if (selected_inverse == "ginv") {
+          # This is the eigenvalue form of ginv_spd(Ki, tol = ginv_tol,
+          # ridge = ridge_jk), avoiding a repeated eigendecomposition for
+          # every spatial eigenvector pair.
+          ifelse(
+            denominator > ginv_tol * max(denominator),
+            1 / denominator,
+            0
+          )
+        } else {
+          1 / denominator
+        }
+        Ainv_z <- Q %*% (inverse_filter * (Qt %*% z_jk))
         scores_i[j, k, ] <- as.numeric(score_numerator %*% Ainv_z)
       }
     }
