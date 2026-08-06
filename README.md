@@ -1,5 +1,13 @@
 # MatrixFPCA
 
+## Method-comparison simulation
+
+[`experiment/simu-methods.R`](experiment/simu-methods.R) benchmarks MatFPCA
+against vectorized Happ--Greven MFPCA with pixelwise PACE and a nonseparable
+spline-PCA baseline. The literature rationale, identifiability-safe metrics,
+and commands are in
+[`experiment/README-method-comparison.md`](experiment/README-method-comparison.md).
+
 ## Eigenfunction truncation
 
 `trunc.matfeigen()` retains the full row and column eigensystems by default and

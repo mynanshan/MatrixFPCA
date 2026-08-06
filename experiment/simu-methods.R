@@ -1,0 +1,268 @@
+#!/usr/bin/env Rscript
+
+# Benchmark MatFPCA against nonseparable methods for sparse longitudinal images.
+# Run from the repository root; see README-method-comparison.md for rationale.
+
+parser <- argparse::ArgumentParser(
+  description = "Compare MatFPCA with sparse nonseparable image/functional PCA methods."
+)
+parser$add_argument("-n", "--n_subjects", type = "integer", default = 50L)
+parser$add_argument("-p", "--d_row", type = "integer", default = 8L)
+parser$add_argument("-q", "--d_col", type = "integer", default = 8L)
+parser$add_argument("-nt", "--n_time_points", type = "integer", default = 51L)
+parser$add_argument("-s1", "--s_obs_min", type = "integer", default = 2L,
+                    help = "Minimum sampling ratio in units of 0.05.")
+parser$add_argument("-s2", "--s_obs_max", type = "integer", default = 4L,
+                    help = "Maximum sampling ratio in units of 0.05.")
+parser$add_argument("-sig", "--noise_lvl", type = "double", default = 0.1)
+parser$add_argument("-rr", "--rank_row", type = "integer", default = 0L)
+parser$add_argument("-rc", "--rank_col", type = "integer", default = 0L)
+parser$add_argument("-rt", "--rank_time", type = "integer", default = 5L)
+parser$add_argument("-set", "--eigset", type = "integer", default = 2L)
+parser$add_argument("-eval", "--eigvalset", type = "integer", default = 1L)
+parser$add_argument("--eigensystem", choices = c("ar1", "spectral"), default = "ar1")
+parser$add_argument("-scd", "--scores_distr",
+                    choices = c("normal", "uniform", "beta32", "t5"),
+                    default = "normal")
+parser$add_argument("-dep", "--score_dependence",
+                    choices = c("independent", "common_amplitude", "common_signed", "heavy_amplitude"),
+                    default = "independent")
+parser$add_argument("-dpar", "--dependence_param", type = "double", default = 1)
+parser$add_argument("-nb", "--nbasis", type = "integer", default = 0L,
+                    help = "MatFPCA basis count; 0 uses the theory-guided choice.")
+parser$add_argument("--spline_nbasis", type = "integer", default = 7L)
+parser$add_argument("--spline_smoothness", type = "double", default = 1e-4)
+parser$add_argument("--happ_npc", type = "integer", default = 3L,
+                    help = "PACE components retained per pixel for HAPP-MFPCA.")
+parser$add_argument("--eval_ncomp", type = "integer", default = 5L,
+                    help = "Leading global eigenspace dimension to evaluate.")
+parser$add_argument("--cov_ncomp", type = "integer", default = 0L,
+                    help = "Global competitor rank; 0 retains all numerical components.")
+parser$add_argument("--methods", type = "character",
+                    default = "matfpca_refined,matfpca_identity,happ_pace,spline_pca")
+parser$add_argument("--weight_folds", type = "integer", default = 5L)
+parser$add_argument("--temporal_method", choices = c("two_step", "joint"), default = "two_step")
+parser$add_argument("--crossfit_diagonal", choices = c("refined", "identity"), default = "refined")
+parser$add_argument("--ncores", type = "integer", default = 1L)
+parser$add_argument("--backend", choices = c("multisession", "multicore"), default = "multisession")
+parser$add_argument("--seed", type = "integer", default = 1L)
+parser$add_argument("--save", type = "integer", default = ifelse(interactive(), 0L, 1L))
+parser$add_argument("--save_fits", type = "integer", default = 0L)
+parser$add_argument("--results_dir", default = file.path("experiment", "results-methods"))
+args <- parser$parse_args()
+
+required_packages <- c("fda", "rTensor", "data.table", "Matrix")
+missing_packages <- required_packages[!vapply(
+  required_packages, requireNamespace, logical(1L), quietly = TRUE
+)]
+if (length(missing_packages)) {
+  stop("Missing required package(s): ", paste(missing_packages, collapse = ", "))
+}
+
+source("matfdata.R")
+source("matfpca.R")
+source(file.path("experiment", "gendata-simple.R"))
+source(file.path("experiment", "competitor-methods.R"))
+
+n <- max(2L, args$n_subjects)
+p <- max(1L, args$d_row)
+q <- max(1L, args$d_col)
+nt <- max(11L, args$n_time_points)
+sig <- max(0, args$noise_lvl)
+s1 <- max(1L, args$s_obs_min)
+s2 <- min(max(s1 + 1L, args$s_obs_max), 20L)
+sampling_ratio <- 0.05 * c(s1, s2)
+npc_row <- if (args$rank_row <= 0L) p else min(p, max(1L, args$rank_row))
+npc_col <- if (args$rank_col <= 0L) q else min(q, max(1L, args$rank_col))
+npc_time <- min(nt, max(1L, args$rank_time))
+nbasis <- if (args$nbasis <= 0L) "theory" else max(3L, min(nt, args$nbasis))
+eval_ncomp <- max(1L, args$eval_ncomp)
+cov_ncomp <- if (args$cov_ncomp <= 0L) NULL else max(eval_ncomp, args$cov_ncomp)
+ncores <- max(1L, args$ncores)
+weight_folds <- min(n, max(1L, args$weight_folds))
+methods <- unique(trimws(strsplit(args$methods, ",", fixed = TRUE)[[1L]]))
+valid_methods <- c("matfpca_refined", "matfpca_identity", "happ_pace", "spline_pca")
+unknown_methods <- setdiff(methods, valid_methods)
+if (length(unknown_methods)) {
+  stop("Unknown method(s): ", paste(unknown_methods, collapse = ", "),
+       ". Valid choices are: ", paste(valid_methods, collapse = ", "))
+}
+
+if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
+  RhpcBLASctl::blas_set_num_threads(if (ncores > 1L) 1L else ncores)
+}
+
+cat(
+  "Simulation settings\n",
+  "  seed: ", args$seed, "\n",
+  "  n, p, q, nt: ", paste(c(n, p, q, nt), collapse = ", "), "\n",
+  "  sampling ratio: ", paste(sampling_ratio, collapse = "--"), "\n",
+  "  noise SD: ", sig, "\n",
+  "  methods: ", paste(methods, collapse = ", "), "\n",
+  "  evaluation eigenspace rank: ", eval_ncomp, "\n",
+  sep = ""
+)
+
+set.seed(args$seed)
+generated <- gen_data_simple(
+  n = n,
+  p = p,
+  q = q,
+  npc_row = npc_row,
+  npc_col = npc_col,
+  npc_time = npc_time,
+  nt = nt,
+  t_range = c(0, 1),
+  sampling_ratio = sampling_ratio,
+  sig = sig,
+  eigvecSet = args$eigset,
+  eigvalSet = args$eigvalset,
+  spatial_model = args$eigensystem,
+  scores_distr = args$scores_distr,
+  score_dependence = args$score_dependence,
+  dependence_param = args$dependence_param
+)
+data <- generated$data
+truth <- generated$cov
+
+fit_one <- function(method) {
+  cat("\n==== ", method, " ====\n", sep = "")
+  fit <- NULL
+  elapsed <- system.time({
+    fit <- switch(
+      method,
+      matfpca_refined = fit_matfcov(
+        data,
+        wScheme = "gaussian_refined",
+        noise = sig > 0,
+        nbasis = nbasis,
+        opwIter = 3L,
+        temporal_method = args$temporal_method,
+        nfolds = weight_folds,
+        crossfit_diagonal = args$crossfit_diagonal
+      ),
+      matfpca_identity = fit_matfcov(
+        data,
+        wScheme = "identity",
+        noise = sig > 0,
+        nbasis = nbasis,
+        temporal_method = args$temporal_method
+      ),
+      happ_pace = fit_happ_pace(
+        data,
+        npc = args$happ_npc,
+        ncomp = cov_ncomp,
+        ncores = ncores,
+        backend = args$backend
+      ),
+      spline_pca = fit_spline_pca(
+        data,
+        nbasis = args$spline_nbasis,
+        ncomp = cov_ncomp,
+        smoothness = args$spline_smoothness
+      )
+    )
+  })[["elapsed"]]
+  metrics <- if (startsWith(method, "matfpca_")) {
+    evaluate_product_fit(fit, truth, eval_ncomp = eval_ncomp)
+  } else {
+    evaluate_full_eigenfit(fit, truth, eval_ncomp = eval_ncomp)
+  }
+  cat(
+    "elapsed seconds: ", format(elapsed, digits = 5), "\n",
+    "relative squared Hilbert--Schmidt covariance error: ",
+    format(metrics[["rel_hs_cov"]], digits = 5), "\n",
+    "mean sin^2 leading-subspace angle: ",
+    format(metrics[["mean_sin2"]], digits = 5), "\n",
+    "relative leading-eigenvalue SSE: ",
+    format(metrics[["rel_eigenvalue_sse"]], digits = 5), "\n",
+    sep = ""
+  )
+  list(fit = fit, elapsed = unname(elapsed), metrics = metrics)
+}
+
+results <- lapply(methods, function(method) {
+  tryCatch(
+    fit_one(method),
+    error = function(error) {
+      message(method, " failed: ", conditionMessage(error))
+      list(fit = NULL, elapsed = NA_real_, metrics = NULL, error = conditionMessage(error))
+    }
+  )
+})
+names(results) <- methods
+
+rows <- data.table::rbindlist(lapply(methods, function(method) {
+  result <- results[[method]]
+  metrics <- result$metrics
+  data.table::data.table(
+    method = method,
+    status = if (is.null(result$error)) "ok" else "error",
+    error = if (is.null(result$error)) NA_character_ else result$error,
+    seed = args$seed,
+    n = n,
+    p = p,
+    q = q,
+    nt = nt,
+    sampling_min = sampling_ratio[1L],
+    sampling_max = sampling_ratio[2L],
+    sig = sig,
+    rank_row = npc_row,
+    rank_col = npc_col,
+    rank_time = npc_time,
+    eigensystem = args$eigensystem,
+    eigvec_set = args$eigset,
+    eigval_set = args$eigvalset,
+    score_distribution = args$scores_distr,
+    score_dependence = args$score_dependence,
+    dependence_param = generated$dependence_param,
+    eval_ncomp = eval_ncomp,
+    happ_npc = args$happ_npc,
+    spline_nbasis = args$spline_nbasis,
+    spline_smoothness = args$spline_smoothness,
+    failed_pixels = if (method == "happ_pace" && !is.null(result$fit)) {
+      pixel_status <- result$fit$diagnostics$pixel_status
+      as.integer(sum(pixel_status[names(pixel_status) != "ok"]))
+    } else {
+      NA_integer_
+    },
+    rel_hs_cov = if (is.null(metrics)) NA_real_ else metrics[["rel_hs_cov"]],
+    mean_sin2 = if (is.null(metrics)) NA_real_ else metrics[["mean_sin2"]],
+    max_sin2 = if (is.null(metrics)) NA_real_ else metrics[["max_sin2"]],
+    rel_eigenvalue_sse = if (is.null(metrics)) NA_real_ else metrics[["rel_eigenvalue_sse"]],
+    evaluated_components = if (is.null(metrics)) NA_integer_ else as.integer(metrics[["evaluated_components"]]),
+    estimated_rank = if (is.null(metrics)) NA_integer_ else as.integer(metrics[["estimated_rank"]]),
+    sig2_hat = if (is.null(metrics)) NA_real_ else metrics[["sig2_hat"]],
+    runtime = result$elapsed
+  )
+}), fill = TRUE)
+
+print(rows[, .(
+  method, status, rel_hs_cov, mean_sin2, max_sin2,
+  rel_eigenvalue_sse, estimated_rank, failed_pixels, runtime
+)])
+
+if (as.logical(args$save)) {
+  dir.create(args$results_dir, recursive = TRUE, showWarnings = FALSE)
+  token <- function(x) gsub("[^A-Za-z0-9]+", "p", format(x, trim = TRUE))
+  file_id <- paste0(
+    "n", n, "_p", p, "_q", q, "_nt", nt,
+    "_s", s1, "-", s2, "_sig", token(sig),
+    "_r", npc_row, "-", npc_col, "-", npc_time,
+    "_eig", token(args$eigensystem), "_sd", args$seed
+  )
+  csv_path <- file.path(args$results_dir, paste0("methods_", file_id, ".csv"))
+  temp_path <- tempfile(pattern = ".methods-", tmpdir = args$results_dir)
+  data.table::fwrite(rows, temp_path)
+  if (!file.rename(temp_path, csv_path)) {
+    unlink(temp_path)
+    stop("Could not publish result file: ", csv_path)
+  }
+  cat("Saved metrics to ", csv_path, "\n", sep = "")
+
+  if (as.logical(args$save_fits)) {
+    fit_path <- file.path(args$results_dir, paste0("fits_", file_id, ".rds"))
+    saveRDS(list(results = results, generated = generated, arguments = args), fit_path)
+    cat("Saved fits to ", fit_path, "\n", sep = "")
+  }
+}
