@@ -213,7 +213,7 @@ For a paper-quality study, vary at least sample size, image dimension, visit spa
 
 ## Compute Canada runs
 
-`run_simu_methods.sh` creates separate Slurm arrays for fast, parallel, slow, and mFACEs resource classes. Each task contains one method group, has a method-specific hard timeout, and writes a scheduler-status record. Install packages under the same R module and preview manifests before submitting:
+`run_simu_methods.sh` creates separate Slurm arrays by computational class and image-size tier. Each task contains one method group, has a method-specific hard timeout, and writes a scheduler-status record. Install packages under the same R module and preview manifests before submitting:
 
 ```bash
 module load r/4.5.0
@@ -231,6 +231,18 @@ The profiles are `pilot` for $4\times4$ and $8\times8$ calibration, `scaling` fo
 | spline PCA, HAPP–PACE, mGSFPCA | 16 × 16 | all eligible scenarios |
 | HAPP–FACE | 8 × 8 | baseline, denser visits, and noise sensitivity |
 | mFACEs | 8 × 8 | baseline dimensions and one denser-visit setting |
+
+The small-image allocations were calibrated from three successful pilot seeds at both $4\times4$ and $8\times8$. Peak observed memory was 0.39 GB for fast tasks, 0.45 GB for medium tasks, 1.89 GB for HAPP–PACE, 2.53 GB for the combined HAPP–FACE/Shi class, and 1.34 GB for mFACEs. The longest pilot wall time was 4 minutes 12 seconds for 8×8 mFACEs. The resulting defaults retain additional headroom:
+
+| Slurm class | image tier | CPUs | memory | Slurm limit | command timeout |
+|---|---:|---:|---:|---:|---:|
+| `fast_small` | at most 8 × 8 | 4 | 2 GB | 15 min | 10 min |
+| `medium_small` | at most 8 × 8 | 4 | 2 GB | 30 min | 20 min |
+| `parallel_small` | at most 8 × 8 | 8 | 4 GB | 30 min | 20 min |
+| `slow_small` | at most 8 × 8 | 8 | 6 GB | 30 min | 20 min |
+| `mfaces` | at most 8 × 8 | 8 | 4 GB | 30 min | 20 min |
+
+The original conservative `fast`, `medium`, `parallel`, and `slow` allocations remain in force for 16×16 and 32×32 jobs because those dimensions have not yet been resource-calibrated. CPU counts also remain unchanged: the available pilot accounting included `AllocCPUS` but not `TotalCPU`, so it does not establish whether fewer cores would preserve runtime. The launcher now prints a post-run `sacct` command containing both `TotalCPU` and `ExitCode` so the next scaling run can calibrate CPU efficiency as well as memory and time.
 
 HAPP jobs use process workers with one BLAS thread each. Shi and mFACEs use one R process with threaded BLAS/OpenMP, avoiding nested oversubscription. Command-level timeouts are shorter than their corresponding Slurm limits. A timeout records `timeout` in its `.status` file and can be retried with `--no-overwrite`, which skips only scheduler tasks marked `ok`. Method-level errors are recorded in result CSV rows and must also be checked; a scheduler task can complete even when its individual method returns an error row.
 

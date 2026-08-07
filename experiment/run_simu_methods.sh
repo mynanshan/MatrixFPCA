@@ -259,12 +259,26 @@ max_dimension_for_group() {
 }
 
 resource_for_group() {
-  case "$1" in
-    proposal|spline) echo fast ;;
-    product|spaco|mgsfpca) echo medium ;;
-    happ_pace) echo parallel ;;
-    happ_face|shi) echo slow ;;
-    mfaces) echo mfaces ;;
+  local group="$1" dimension="$2"
+  case "${group}" in
+    proposal|spline)
+      if (( dimension <= 8 )); then echo fast_small; else echo fast; fi
+      ;;
+    product|spaco|mgsfpca)
+      if (( dimension <= 8 )); then echo medium_small; else echo medium; fi
+      ;;
+    happ_pace)
+      if (( dimension <= 8 )); then echo parallel_small; else echo parallel; fi
+      ;;
+    happ_face)
+      echo slow_small
+      ;;
+    shi)
+      if (( dimension <= 8 )); then echo slow_small; else echo slow; fi
+      ;;
+    mfaces)
+      echo mfaces
+      ;;
   esac
 }
 
@@ -284,45 +298,64 @@ blas_threads_for_group() {
 }
 
 timeout_for_group() {
-  case "$1" in
+  local group="$1" dimension="$2"
+  if (( dimension <= 8 )); then
+    case "${group}" in
+      proposal|spline) echo "${MATFPCA_TIMEOUT_FAST_SMALL:-10m}" ;;
+      product|spaco|mgsfpca) echo "${MATFPCA_TIMEOUT_MEDIUM_SMALL:-20m}" ;;
+      happ_pace) echo "${MATFPCA_TIMEOUT_PARALLEL_SMALL:-20m}" ;;
+      happ_face|shi) echo "${MATFPCA_TIMEOUT_SLOW_SMALL:-20m}" ;;
+      mfaces) echo "${MATFPCA_TIMEOUT_MFACES:-20m}" ;;
+    esac
+    return
+  fi
+  case "${group}" in
     proposal|spline) echo "${MATFPCA_TIMEOUT_FAST:-50m}" ;;
     product) echo "${MATFPCA_TIMEOUT_PRODUCT:-90m}" ;;
     spaco|mgsfpca|happ_pace) echo "${MATFPCA_TIMEOUT_MEDIUM:-210m}" ;;
-    happ_face) echo "${MATFPCA_TIMEOUT_FACE:-210m}" ;;
     shi) echo "${MATFPCA_TIMEOUT_SHI:-330m}" ;;
-    mfaces) echo "${MATFPCA_TIMEOUT_MFACES:-450m}" ;;
   esac
 }
 
-RESOURCE_CLASSES=(fast medium parallel slow mfaces)
+RESOURCE_CLASSES=(fast_small fast medium_small medium parallel_small parallel slow_small slow mfaces)
 cpus_for_class() {
   case "$1" in
-    fast|medium) echo 4 ;;
-    parallel|slow|mfaces) echo 8 ;;
+    fast_small|fast|medium_small|medium) echo 4 ;;
+    parallel_small|parallel|slow_small|slow|mfaces) echo 8 ;;
   esac
 }
 mem_for_class() {
   case "$1" in
+    fast_small) echo "${MATFPCA_MEM_FAST_SMALL:-2G}" ;;
     fast) echo "${MATFPCA_MEM_FAST:-16G}" ;;
-    medium|parallel) echo "${MATFPCA_MEM_MEDIUM:-32G}" ;;
+    medium_small) echo "${MATFPCA_MEM_MEDIUM_SMALL:-2G}" ;;
+    medium) echo "${MATFPCA_MEM_MEDIUM:-32G}" ;;
+    parallel_small) echo "${MATFPCA_MEM_PARALLEL_SMALL:-4G}" ;;
+    parallel) echo "${MATFPCA_MEM_PARALLEL:-32G}" ;;
+    slow_small) echo "${MATFPCA_MEM_SLOW_SMALL:-6G}" ;;
     slow) echo "${MATFPCA_MEM_SLOW:-48G}" ;;
-    mfaces) echo "${MATFPCA_MEM_MFACES:-64G}" ;;
+    mfaces) echo "${MATFPCA_MEM_MFACES:-4G}" ;;
   esac
 }
 time_for_class() {
   case "$1" in
+    fast_small) echo "${MATFPCA_TIME_FAST_SMALL:-0:15:00}" ;;
     fast) echo "${MATFPCA_TIME_FAST:-1:00:00}" ;;
-    medium|parallel) echo "${MATFPCA_TIME_MEDIUM:-4:00:00}" ;;
+    medium_small) echo "${MATFPCA_TIME_MEDIUM_SMALL:-0:30:00}" ;;
+    medium) echo "${MATFPCA_TIME_MEDIUM:-4:00:00}" ;;
+    parallel_small) echo "${MATFPCA_TIME_PARALLEL_SMALL:-0:30:00}" ;;
+    parallel) echo "${MATFPCA_TIME_PARALLEL:-4:00:00}" ;;
+    slow_small) echo "${MATFPCA_TIME_SLOW_SMALL:-0:30:00}" ;;
     slow) echo "${MATFPCA_TIME_SLOW:-6:00:00}" ;;
-    mfaces) echo "${MATFPCA_TIME_MFACES:-8:00:00}" ;;
+    mfaces) echo "${MATFPCA_TIME_MFACES:-0:30:00}" ;;
   esac
 }
 parallel_cap_for_class() {
   case "$1" in
-    fast) echo 60 ;;
-    medium) echo 30 ;;
-    parallel) echo 20 ;;
-    slow) echo 12 ;;
+    fast_small|fast) echo 60 ;;
+    medium_small|medium) echo 30 ;;
+    parallel_small|parallel) echo 20 ;;
+    slow_small|slow) echo 12 ;;
     mfaces) echo 6 ;;
   esac
 }
@@ -392,11 +425,11 @@ add_scenario() {
         skipped_existing=$((skipped_existing + 1))
         continue
       fi
-      resource="$(resource_for_group "${group}")"
+      resource="$(resource_for_group "${group}" "${p}")"
       methods="$(methods_for_group "${group}")"
       fit_cores="$(fit_cores_for_group "${group}")"
       blas_threads="$(blas_threads_for_group "${group}")"
-      timeout_limit="$(timeout_for_group "${group}")"
+      timeout_limit="$(timeout_for_group "${group}" "${p}")"
       printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d\t%s\t%s\t%d\t%d\t%s\t%d\n" \
         "${job_id}" "${scenario}" "${seed}" "${n}" "${p}" "${q}" "${nt}" \
         "${s1}" "${s2}" "${sigma}" "${distribution}" "${dependence}" \
@@ -488,5 +521,5 @@ for resource in "${RESOURCE_CLASSES[@]}"; do
 done
 
 echo "After completion:"
-echo "  sacct -j $(IFS=,; echo "${submitted_jobs[*]}") --units=M --format=JobID,State,Elapsed,AllocCPUS,ReqMem,MaxRSS"
+echo "  sacct -j $(IFS=,; echo "${submitted_jobs[*]}") --units=M --format=JobID%24,State,ExitCode,Elapsed,TotalCPU,AllocCPUS,ReqMem,MaxRSS"
 echo "  Rscript experiment/summarize_simu_methods.R --results_dir ${RESULTS_DIR}"
