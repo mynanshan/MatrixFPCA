@@ -2,7 +2,7 @@ library(rTensor)
 
 source("matfdata.R")
 source("matfpca.R")
-source(file.path("experiment", "competitor-methods.R"))
+source(file.path("experiment", "competitors", "core.R"))
 
 tgrid <- seq(0, 1, length.out = 21)
 theta <- sqrt(2) * sin(pi * tgrid)

@@ -436,9 +436,26 @@ evaluate_full_eigenfit <- function(fit, truth, eval_ncomp = 5L) {
   }
   truth_norm2 <- matfcovNorm2(truth)
   covariance_error2 <- max(0, fit_norm2 + truth_norm2 - 2 * cross_term)
+  time_weights <- .trapz_weights(truth$t_grid)
+  time_values <- pmax(eigen(
+    (sqrt(time_weights) * truth$K) * rep(sqrt(time_weights), each = length(time_weights)),
+    symmetric = TRUE, only.values = TRUE
+  )$values, 0)
+  row_values <- pmax(eigen(truth$U, symmetric = TRUE, only.values = TRUE)$values, 0)
+  col_values <- pmax(eigen(truth$V, symmetric = TRUE, only.values = TRUE)$values, 0)
+  truth_spectrum <- sort(
+    as.vector(time_values %o% row_values %o% col_values), decreasing = TRUE
+  )
+  oracle_rank <- min(length(fit$nu), length(truth_spectrum))
+  oracle_rank_error <- max(
+    0, (truth_norm2 - sum(truth_spectrum[seq_len(oracle_rank)]^2)) / truth_norm2
+  )
+  relative_covariance_error <- covariance_error2 / truth_norm2
 
   c(
-    rel_hs_cov = covariance_error2 / truth_norm2,
+    rel_hs_cov = relative_covariance_error,
+    oracle_rank_rel_hs = oracle_rank_error,
+    excess_rel_hs_cov = max(0, relative_covariance_error - oracle_rank_error),
     mean_sin2 = max(0, 1 - sum(singular_values^2) / r),
     max_sin2 = if (r_hat < r) 1 else max(0, 1 - min(singular_values)^2),
     rel_eigenvalue_sse = sum((lambda_hat - lambda_true)^2) / sum(lambda_true^2),
@@ -457,6 +474,31 @@ evaluate_product_fit <- function(fit, truth, eval_ncomp = 5L) {
     eval_ncomp = eval_ncomp
   )
   eigen_metrics["rel_hs_cov"] <- covariance_error2 / matfcovNorm2(truth)
+  eigen_metrics["oracle_rank_rel_hs"] <- 0
+  eigen_metrics["excess_rel_hs_cov"] <- eigen_metrics["rel_hs_cov"]
   eigen_metrics["sig2_hat"] <- fit$C$sig2
+  time_weights <- .trapz_weights(fit$C$t_grid)
+  time_values <- pmax(eigen(
+    (sqrt(time_weights) * fit$C$K) * rep(sqrt(time_weights), each = length(time_weights)),
+    symmetric = TRUE, only.values = TRUE
+  )$values, 0)
+  row_values <- pmax(eigen(fit$C$U, symmetric = TRUE, only.values = TRUE)$values, 0)
+  col_values <- pmax(eigen(fit$C$V, symmetric = TRUE, only.values = TRUE)$values, 0)
+  product_values <- as.vector(time_values %o% row_values %o% col_values)
+  eigen_metrics["estimated_rank"] <- sum(
+    product_values > 10 * .Machine$double.eps * max(product_values, 0)
+  )
   eigen_metrics
 }
+
+# Keep package-specific and research-prototype adapters isolated from the
+# common metrics above. Source order matters: common.R uses these utilities.
+.competitor_directory <- file.path("experiment", "competitors")
+for (.competitor_file in c(
+  "common.R", "happ-face.R", "mfaces.R", "mgsfpca.R",
+  "product-fpca.R", "shi-mdfpca.R", "spaco-minus.R"
+)) {
+  source(file.path(.competitor_directory, .competitor_file))
+}
+rm(.competitor_directory, .competitor_file)
+

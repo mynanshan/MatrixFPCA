@@ -3,10 +3,14 @@
 ## Method-comparison simulation
 
 [`experiment/simu-methods.R`](experiment/simu-methods.R) benchmarks MatFPCA
-against vectorized Happ--Greven MFPCA with pixelwise PACE and a nonseparable
-spline-PCA baseline. The literature rationale, identifiability-safe metrics,
-and commands are in
+against HAPP--PACE/FACE, mFACEs, mGSFPCA, Shi et al.'s longitudinal-image
+MD-FPCA, SPACO-, sparse Product FPCA, and a spline-PCA baseline. Package and
+research-prototype adapters live in
+[`experiment/competitors/`](experiment/competitors/). The literature rationale,
+identifiability-safe metrics, and commands are in
 [`experiment/README-method-comparison.md`](experiment/README-method-comparison.md).
+Repeated Compute Canada experiments are submitted through
+[`experiment/run_simu_methods.sh`](experiment/run_simu_methods.sh).
 
 ## Eigenfunction truncation
 

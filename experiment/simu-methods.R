@@ -7,8 +7,8 @@ parser <- argparse::ArgumentParser(
   description = "Compare MatFPCA with sparse nonseparable image/functional PCA methods."
 )
 parser$add_argument("-n", "--n_subjects", type = "integer", default = 50L)
-parser$add_argument("-p", "--d_row", type = "integer", default = 8L)
-parser$add_argument("-q", "--d_col", type = "integer", default = 8L)
+parser$add_argument("-p", "--d_row", type = "integer", default = 4L)
+parser$add_argument("-q", "--d_col", type = "integer", default = 4L)
 parser$add_argument("-nt", "--n_time_points", type = "integer", default = 51L)
 parser$add_argument("-s1", "--s_obs_min", type = "integer", default = 2L,
                     help = "Minimum sampling ratio in units of 0.05.")
@@ -34,21 +34,55 @@ parser$add_argument("--spline_nbasis", type = "integer", default = 7L)
 parser$add_argument("--spline_smoothness", type = "double", default = 1e-4)
 parser$add_argument("--happ_npc", type = "integer", default = 3L,
                     help = "PACE components retained per pixel for HAPP-MFPCA.")
+parser$add_argument("--face_knots", type = "integer", default = 5L)
+parser$add_argument("--face_pve", type = "double", default = 0.999)
+parser$add_argument("--mfaces_knots", type = "integer", default = 5L)
+parser$add_argument("--mfaces_pve", type = "double", default = 0.999)
+parser$add_argument("--mfaces_search_length", type = "integer", default = 10L)
+parser$add_argument("--mfaces_max_outcomes", type = "integer", default = 25L)
+parser$add_argument("--mgs_rank_candidates", default = "3",
+                    help = "Comma-separated per-pixel ranks; multiple values invoke AIC selection.")
+parser$add_argument("--mgs_basis_candidates", default = "7",
+                    help = "Comma-separated per-pixel spline basis sizes.")
+parser$add_argument("--mgs_mu_nbasis", type = "integer", default = 7L)
+parser$add_argument("--mgs_maxit", type = "integer", default = 300L)
+parser$add_argument("--product_spatial_npc", type = "integer", default = 5L)
+parser$add_argument("--product_temporal_npc", type = "integer", default = 3L)
+parser$add_argument("--shi_ncomp", type = "integer", default = 5L)
+parser$add_argument("--shi_nbasis_time", type = "integer", default = 7L)
+parser$add_argument("--shi_nbasis_row", type = "integer", default = 5L)
+parser$add_argument("--shi_nbasis_col", type = "integer", default = 5L)
+parser$add_argument("--shi_maxit", type = "integer", default = 100L)
+parser$add_argument("--shi_tolerance", type = "double", default = 1e-5)
+parser$add_argument("--spaco_rank", type = "integer", default = 5L)
+parser$add_argument("--spaco_nbasis", type = "integer", default = 7L)
+parser$add_argument("--spaco_smoothness", type = "double", default = 1e-2)
+parser$add_argument("--spaco_maxit", type = "integer", default = 100L)
+parser$add_argument("--allow_slow_competitors", type = "integer", default = 0L,
+                    help = "Allow mFACEs beyond --mfaces_max_outcomes.")
 parser$add_argument("--eval_ncomp", type = "integer", default = 5L,
                     help = "Leading global eigenspace dimension to evaluate.")
 parser$add_argument("--cov_ncomp", type = "integer", default = 0L,
                     help = "Global competitor rank; 0 retains all numerical components.")
 parser$add_argument("--methods", type = "character",
-                    default = "matfpca_refined,matfpca_identity,happ_pace,spline_pca")
+                    default = paste(c(
+                      "matfpca_refined", "matfpca_identity", "happ_pace",
+                      "happ_face", "mfaces", "mgsfpca", "shi_mdfpca",
+                      "spaco_minus", "sparse_product_fpca", "spline_pca"
+                    ), collapse = ","))
 parser$add_argument("--weight_folds", type = "integer", default = 5L)
 parser$add_argument("--temporal_method", choices = c("two_step", "joint"), default = "two_step")
 parser$add_argument("--crossfit_diagonal", choices = c("refined", "identity"), default = "refined")
 parser$add_argument("--ncores", type = "integer", default = 1L)
+parser$add_argument("--blas_threads", type = "integer", default = 0L,
+                    help = "BLAS/OpenMP threads; 0 uses 1 when method-level parallelism is active.")
 parser$add_argument("--backend", choices = c("multisession", "multicore"), default = "multisession")
 parser$add_argument("--seed", type = "integer", default = 1L)
 parser$add_argument("--save", type = "integer", default = ifelse(interactive(), 0L, 1L))
 parser$add_argument("--save_fits", type = "integer", default = 0L)
 parser$add_argument("--results_dir", default = file.path("experiment", "results-methods"))
+parser$add_argument("--result_tag", default = "",
+                    help = "Optional scheduler/job tag appended to the result filename.")
 args <- parser$parse_args()
 
 required_packages <- c("fda", "rTensor", "data.table", "Matrix")
@@ -62,7 +96,7 @@ if (length(missing_packages)) {
 source("matfdata.R")
 source("matfpca.R")
 source(file.path("experiment", "gendata-simple.R"))
-source(file.path("experiment", "competitor-methods.R"))
+source(file.path("experiment", "competitors", "core.R"))
 
 n <- max(2L, args$n_subjects)
 p <- max(1L, args$d_row)
@@ -79,9 +113,27 @@ nbasis <- if (args$nbasis <= 0L) "theory" else max(3L, min(nt, args$nbasis))
 eval_ncomp <- max(1L, args$eval_ncomp)
 cov_ncomp <- if (args$cov_ncomp <= 0L) NULL else max(eval_ncomp, args$cov_ncomp)
 ncores <- max(1L, args$ncores)
+blas_threads <- if (args$blas_threads <= 0L) {
+  if (ncores > 1L) 1L else ncores
+} else {
+  max(1L, args$blas_threads)
+}
 weight_folds <- min(n, max(1L, args$weight_folds))
 methods <- unique(trimws(strsplit(args$methods, ",", fixed = TRUE)[[1L]]))
-valid_methods <- c("matfpca_refined", "matfpca_identity", "happ_pace", "spline_pca")
+parse_integer_list <- function(value, name) {
+  parsed <- suppressWarnings(as.integer(trimws(strsplit(value, ",", fixed = TRUE)[[1L]])))
+  if (!length(parsed) || anyNA(parsed) || any(parsed < 1L)) {
+    stop(name, " must be a comma-separated list of positive integers.")
+  }
+  unique(parsed)
+}
+mgs_rank_candidates <- parse_integer_list(args$mgs_rank_candidates, "mgs_rank_candidates")
+mgs_basis_candidates <- parse_integer_list(args$mgs_basis_candidates, "mgs_basis_candidates")
+valid_methods <- c(
+  "matfpca_refined", "matfpca_identity", "happ_pace", "happ_face",
+  "mfaces", "mgsfpca", "shi_mdfpca", "spaco_minus",
+  "sparse_product_fpca", "spline_pca"
+)
 unknown_methods <- setdiff(methods, valid_methods)
 if (length(unknown_methods)) {
   stop("Unknown method(s): ", paste(unknown_methods, collapse = ", "),
@@ -89,7 +141,8 @@ if (length(unknown_methods)) {
 }
 
 if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
-  RhpcBLASctl::blas_set_num_threads(if (ncores > 1L) 1L else ncores)
+  RhpcBLASctl::blas_set_num_threads(blas_threads)
+  RhpcBLASctl::omp_set_num_threads(blas_threads)
 }
 
 cat(
@@ -99,6 +152,7 @@ cat(
   "  sampling ratio: ", paste(sampling_ratio, collapse = "--"), "\n",
   "  noise SD: ", sig, "\n",
   "  methods: ", paste(methods, collapse = ", "), "\n",
+  "  method workers, BLAS threads: ", ncores, ", ", blas_threads, "\n",
   "  evaluation eigenspace rank: ", eval_ncomp, "\n",
   sep = ""
 )
@@ -154,6 +208,62 @@ fit_one <- function(method) {
         ncomp = cov_ncomp,
         ncores = ncores,
         backend = args$backend
+      ),
+      happ_face = fit_happ_face(
+        data,
+        npc = args$happ_npc,
+        ncomp = cov_ncomp,
+        knots = args$face_knots,
+        pve = args$face_pve,
+        ncores = ncores,
+        backend = args$backend
+      ),
+      mfaces = fit_mfaces(
+        data,
+        ncomp = cov_ncomp,
+        knots = args$mfaces_knots,
+        pve = args$mfaces_pve,
+        search_length = args$mfaces_search_length,
+        max_outcomes = args$mfaces_max_outcomes,
+        allow_large = as.logical(args$allow_slow_competitors)
+      ),
+      mgsfpca = fit_mgsfpca(
+        data,
+        ncomp = cov_ncomp,
+        rank_candidates = mgs_rank_candidates,
+        basis_candidates = mgs_basis_candidates,
+        mu_nbasis = args$mgs_mu_nbasis,
+        maxit = args$mgs_maxit
+      ),
+      shi_mdfpca = fit_shi_mdfpca(
+        data,
+        ncomp = if (is.null(cov_ncomp)) {
+          max(eval_ncomp, args$shi_ncomp)
+        } else {
+          cov_ncomp
+        },
+        nbasis_time = args$shi_nbasis_time,
+        nbasis_row = args$shi_nbasis_row,
+        nbasis_col = args$shi_nbasis_col,
+        maxit = args$shi_maxit,
+        tolerance = args$shi_tolerance
+      ),
+      spaco_minus = fit_spaco_minus(
+        data,
+        ncomp = if (is.null(cov_ncomp)) {
+          max(eval_ncomp, args$spaco_rank)
+        } else {
+          cov_ncomp
+        },
+        nbasis = args$spaco_nbasis,
+        smoothness = args$spaco_smoothness,
+        maxit = args$spaco_maxit
+      ),
+      sparse_product_fpca = fit_sparse_product_fpca(
+        data,
+        ncomp = cov_ncomp,
+        spatial_npc = args$product_spatial_npc,
+        temporal_npc = args$product_temporal_npc
       ),
       spline_pca = fit_spline_pca(
         data,
@@ -216,17 +326,20 @@ rows <- data.table::rbindlist(lapply(methods, function(method) {
     score_distribution = args$scores_distr,
     score_dependence = args$score_dependence,
     dependence_param = generated$dependence_param,
+    result_tag = if (nzchar(args$result_tag)) args$result_tag else NA_character_,
     eval_ncomp = eval_ncomp,
     happ_npc = args$happ_npc,
     spline_nbasis = args$spline_nbasis,
     spline_smoothness = args$spline_smoothness,
-    failed_pixels = if (method == "happ_pace" && !is.null(result$fit)) {
+    failed_pixels = if (method %in% c("happ_pace", "happ_face") && !is.null(result$fit)) {
       pixel_status <- result$fit$diagnostics$pixel_status
       as.integer(sum(pixel_status[names(pixel_status) != "ok"]))
     } else {
       NA_integer_
     },
     rel_hs_cov = if (is.null(metrics)) NA_real_ else metrics[["rel_hs_cov"]],
+    oracle_rank_rel_hs = if (is.null(metrics)) NA_real_ else metrics[["oracle_rank_rel_hs"]],
+    excess_rel_hs_cov = if (is.null(metrics)) NA_real_ else metrics[["excess_rel_hs_cov"]],
     mean_sin2 = if (is.null(metrics)) NA_real_ else metrics[["mean_sin2"]],
     max_sin2 = if (is.null(metrics)) NA_real_ else metrics[["max_sin2"]],
     rel_eigenvalue_sse = if (is.null(metrics)) NA_real_ else metrics[["rel_eigenvalue_sse"]],
@@ -238,7 +351,8 @@ rows <- data.table::rbindlist(lapply(methods, function(method) {
 }), fill = TRUE)
 
 print(rows[, .(
-  method, status, rel_hs_cov, mean_sin2, max_sin2,
+  method, status, rel_hs_cov, oracle_rank_rel_hs, excess_rel_hs_cov,
+  mean_sin2, max_sin2,
   rel_eigenvalue_sse, estimated_rank, failed_pixels, runtime
 )])
 
@@ -249,8 +363,15 @@ if (as.logical(args$save)) {
     "n", n, "_p", p, "_q", q, "_nt", nt,
     "_s", s1, "-", s2, "_sig", token(sig),
     "_r", npc_row, "-", npc_col, "-", npc_time,
-    "_eig", token(args$eigensystem), "_sd", args$seed
+    "_eig", token(args$eigensystem),
+    "_dist", token(args$scores_distr),
+    "_dep", token(args$score_dependence),
+    "_dp", token(generated$dependence_param),
+    "_sd", args$seed
   )
+  if (nzchar(args$result_tag)) {
+    file_id <- paste0(file_id, "_tag", token(args$result_tag))
+  }
   csv_path <- file.path(args$results_dir, paste0("methods_", file_id, ".csv"))
   temp_path <- tempfile(pattern = ".methods-", tmpdir = args$results_dir)
   data.table::fwrite(rows, temp_path)
