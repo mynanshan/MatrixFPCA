@@ -1,50 +1,22 @@
 # Competitor implementations
 
-`core.R` contains the common Hilbert-space metrics plus the maintained
-HAPP--PACE and spline-PCA implementations. Every adapter returns the common
-latent-covariance eigenfit used by
-`experiment/simu-methods.R`: `psi[time,row,column,component]`, decreasing
-eigenvalues `nu`, estimated noise `sig2`, and `tgrid`. The benchmark then
-canonicalizes the functions in its trapezoidal-time/pixel-sum inner product.
+This directory isolates package adapters and independent implementations from the simulation driver. The complete statistical formulation and mathematical description of every estimator are in [`../README-method-comparison.md`](../README-method-comparison.md).
 
-## Primary competitors
+Every adapter returns the same latent-covariance eigenfit: `psi[time,row,column,component]`, decreasing eigenvalues `nu`, estimated noise variance `sig2`, and `tgrid`. `core.R` canonicalizes these eigenfunctions in the trapezoidal-time/pixel-sum inner product before evaluation, so signs, numerical scaling, and arbitrary basis rotations do not change the metrics.
 
-- `shi-mdfpca.R`: independent, paper-faithful implementation of Shi, Jiang,
-  Ma, Beg and Cao (2024). It directly targets sparsely observed longitudinal
-  images with sequential alternating regression and a three-domain
-  tensor-product B-spline. It adds a documented noise correction when turning
-  fitted subject scores into a covariance estimate. No public author code for
-  the longitudinal-image estimator was found; this is therefore not described
-  as the authors' original implementation.
-- `mfaces.R`: the CRAN `mfaces` implementation of Li, Xiao and Luo's smoothed
-  multivariate auto/cross-covariance estimator. It is the strongest direct
-  nonseparable covariance-smoothing baseline here, but fits `d(d+1)/2`
-  surfaces for `d=p*q` pixels. A default safety limit prevents accidental
-  large-image runs.
-- `happ-face.R` and the existing `fit_happ_pace`: the Happ--Greven finite
-  expansion, with FACE or PACE univariate FPCA at each pixel. Comparing these
-  two diagnoses whether poor performance is caused by PACE rather than the
-  multivariate construction.
-- `mgsfpca.R`: the CRAN `mGSFPCA` Gaussian sparse multivariate FPCA pipeline.
-  A single rank/basis value is the reproducible fast profile; comma-separated
-  candidate lists enable the package's per-pixel AIC selection.
+## File map
 
-## Secondary structural competitors
+- `core.R` contains shared Hilbert-space metrics, HAPP–PACE, and the deliberately weak smooth-then-PCA spline baseline.
+- `happ-face.R` applies the Happ–Greven finite-expansion construction with a FACE rather than PACE univariate decomposition at every pixel.
+- `mfaces.R` calls `mfaces::mface.sparse` to estimate all $d(d+1)/2$ multivariate auto/cross-covariance surfaces for $d=pq$ pixels.
+- `mgsfpca.R` calls the Gaussian path of `mGSFPCA::spMultFPCA`, preserving package-selected local ranks and basis sizes in diagnostics.
+- `shi-mdfpca.R` independently implements Shi et al.'s sequential alternating regression in a time–row–column tensor-product spline basis, including Gram-orthogonality constraints and score-noise correction. It is paper-faithful code, not author-supplied software.
+- `spaco-minus.R` independently implements a smooth CP/PARAFAC model for missing longitudinal tensor slabs without auxiliary covariates. It is labeled SPACO-minus because neither the authors' experiment repository nor the PyPI artifact provides an importable implementation of the original estimator.
+- `product-fpca.R` calls `fdarep::SparseProductFPCA` after column-major vectorization of each image and records that artificial spatial ordering in diagnostics.
+- `common.R` contains data reshaping, interpolation, truncation, and package-checking helpers shared by the adapters.
+- `install-dependencies.R` installs the reproducible R package layer without copying package binaries into the repository.
 
-- `spaco-minus.R`: a self-contained smooth probabilistic-PARAFAC-style
-  comparator without auxiliary covariates. The paper authors' public
-  `SPACOexperments` repository imports a `spaco` module that it does not ship,
-  while the `spaco==1.0` PyPI wheel contains metadata but no Python module.
-  This adapter is consequently labeled an independent SPACO- style
-  implementation, not exact author software.
-- `product-fpca.R`: CRAN `fdarep::SparseProductFPCA`. It treats a vectorized
-  image as a one-dimensional spatial function and records that artificial
-  ordering in diagnostics. It is useful as a structured sparse baseline but
-  does not respect the two image axes.
-- `spline_pca` in `core.R`: smooth-then-PCA, retained as a deliberately
-  weak sparse-design baseline.
-
-## Installation and complexity
+## Installation
 
 Run from the repository root:
 
@@ -52,22 +24,20 @@ Run from the repository root:
 Rscript experiment/competitors/install-dependencies.R
 ```
 
-The current verified package layer is `mfaces 0.1-4`, `mGSFPCA 0.2.2`, and
-`fdarep 0.1.1`. Exact versions used in any run are retained inside fit
-diagnostics. Package binaries and virtual environments are not copied into the
-repository.
+The locally verified package layer on 2026-08-06 is `fdapace 0.6.0`, `face 0.1-8`, `MFPCA 1.3-11`, `mfaces 0.1-4`, `mGSFPCA 0.2.2`, and `fdarep 0.1.1`. Exact versions used in a fit are retained in adapter diagnostics when the underlying package exposes them.
 
-Approximate scaling in the number of pixel outcomes `d=p*q`:
+## Computational structure
 
-| method | important fit-time/memory driver |
+Approximate scaling in the number of pixel outcomes $d=pq$ is:
+
+| method | principal fit-time or memory driver |
 |---|---|
-| HAPP--PACE/FACE | `d` independent univariate smoothers, then PCA of local scores |
-| mFACEs | `d(d+1)/2` smoothed covariance surfaces |
-| mGSFPCA | `d` univariate generalized sparse FPCAs, then score PCA |
-| Shi MD-FPCA | alternating solves in `b_t*b_r*b_c` spline coefficients |
-| SPACO- style | rank-`K` ALS; linear in observed tensor entries per sweep |
-| SparseProductFPCA | spatial FPCA plus sparse temporal FPCA |
+| HAPP–PACE/FACE | $d$ independent univariate smoothers followed by PCA of concatenated local scores |
+| mFACEs | $d(d+1)/2$ smoothed covariance surfaces followed by a block-kernel eigendecomposition |
+| mGSFPCA | $d$ generalized sparse univariate FPCAs followed by multivariate score PCA |
+| Shi MD-FPCA | alternating linear solves in $b_t b_r b_c$ tensor-spline coefficients for each component |
+| SPACO-minus | rank-$K$ alternating least squares, approximately linear in observed tensor entries per sweep |
+| sparse Product FPCA | marginal spatial FPCA followed by sparse temporal FPCA and product-component assembly |
+| spline PCA | $nd$ subject/pixel spline fits followed by PCA of $b_td$ coefficients |
 
-For dimension scaling, run separate `p=q=3,4,6,8,...` jobs and keep failures
-or safety-limit exits in the results table; they are part of the computational
-comparison rather than missing data to discard.
+Dimension studies must retain failures, safety-limit exits, and timeouts in the result table. They are evidence about computational applicability rather than missing observations to discard.

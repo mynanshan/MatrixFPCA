@@ -66,7 +66,11 @@ res[, nbasis := as.character(nbasis)]
 optional_metric_columns <- c(
   "iseKc", "reliseKc",
   "sseGammaU", "sseGammaV", "relsseGammaU", "relsseGammaV",
-  "mseX", "relmseX"
+  "mseX", "relmseX",
+  "relsseX_subject_mean", "relsseX_subject_median",
+  "relsseX_subject_q025", "relsseX_subject_q25",
+  "relsseX_subject_q75", "relsseX_subject_q975",
+  "relsseX_subject_max"
 )
 for (column in optional_metric_columns) {
   if (!column %in% names(res)) res[, (column) := NA_real_]
@@ -304,10 +308,19 @@ metric_columns <- c(
   "relsseU", "relsseV", "reliseK", "reliseKc", "relsiseC", "relmseX"
 )
 diagnostic_metric_columns <- c("relsseGammaU", "relsseGammaV")
+subject_reconstruction_metric_columns <- c(
+  "relsseX_subject_mean", "relsseX_subject_median",
+  "relsseX_subject_q025", "relsseX_subject_q25",
+  "relsseX_subject_q75", "relsseX_subject_q975",
+  "relsseX_subject_max"
+)
 absolute_metric_columns <- c(
   "sseU", "sseV", "iseK", "iseKc", "sseGammaU", "sseGammaV", "mseX"
 )
-for (column in c(metric_columns, diagnostic_metric_columns, absolute_metric_columns)) {
+for (column in c(
+  metric_columns, diagnostic_metric_columns,
+  subject_reconstruction_metric_columns, absolute_metric_columns
+)) {
   res[, paste0(column, "_raw") := exp(get(column))]
 }
 res[, sseU_pixel_raw := sseU_raw / p^2]
@@ -384,6 +397,47 @@ summary_wide <- dcast(
   )
 )
 
+# Reconstruction is summarized hierarchically. Each simulation run first
+# supplies subject-level summaries; replications are then the independent units
+# over which those summaries are averaged. The outer subject quantiles describe
+# subject heterogeneity, while the CI below describes Monte Carlo uncertainty
+# in the mean of the run-specific subject medians.
+reconstruction_summary <- res[
+  ,
+  .(
+    n_rep = .N,
+    n_reconstruction = sum(!is.na(relsseX_subject_median_raw)),
+    mean_subject_mean = mean_metric(relsseX_subject_mean_raw),
+    mean_subject_median = mean_metric(relsseX_subject_median_raw),
+    sd_subject_median = sd_metric(relsseX_subject_median_raw),
+    mean_subject_q025 = mean_metric(relsseX_subject_q025_raw),
+    mean_subject_q25 = mean_metric(relsseX_subject_q25_raw),
+    mean_subject_q75 = mean_metric(relsseX_subject_q75_raw),
+    mean_subject_q975 = mean_metric(relsseX_subject_q975_raw),
+    mean_subject_max = mean_metric(relsseX_subject_max_raw)
+  ),
+  by = setting_columns
+]
+reconstruction_summary[, median_mc_se :=
+  sd_subject_median / sqrt(n_reconstruction)]
+reconstruction_summary[, median_mc_halfwidth := NA_real_]
+reconstruction_summary[
+  n_reconstruction >= 2L,
+  median_mc_halfwidth :=
+    qt(0.975, df = n_reconstruction - 1L) * median_mc_se
+]
+reconstruction_summary[, `:=`(
+  median_mc_lower = pmax(
+    mean_subject_median - median_mc_halfwidth,
+    .Machine$double.xmin
+  ),
+  median_mc_upper = mean_subject_median + median_mc_halfwidth
+)]
+setorder(
+  reconstruction_summary,
+  dependence, distr, n, p, sig, dependence_param, weight
+)
+
 # Paired replicate-level comparison. Ratios below one favor Gaussian-refined
 # weighting.
 paired <- dcast(
@@ -407,6 +461,10 @@ dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 fwrite(res, file.path(output_dir, "simulation_raw_combined.csv"))
 fwrite(summary_long, file.path(output_dir, "simulation_summary_long.csv"))
 fwrite(summary_wide, file.path(output_dir, "simulation_summary_wide.csv"))
+fwrite(
+  reconstruction_summary,
+  file.path(output_dir, "simulation_reconstruction_summary.csv")
+)
 fwrite(paired, file.path(output_dir, "simulation_paired_ratios.csv"))
 fwrite(expected_runs, file.path(output_dir, "simulation_expected_runs.csv"))
 fwrite(completion_by_setting, file.path(output_dir, "simulation_completion_by_setting.csv"))
@@ -463,6 +521,15 @@ res <- res[
     eigensystem == plot_eigensystem
 ]
 res[, weight_label := factor(
+  weight,
+  levels = c("identity", "gaussian_refined"),
+  labels = c("Identity", "Refined")
+)]
+reconstruction_plot_data <- reconstruction_summary[
+  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
+    eigensystem == plot_eigensystem
+]
+reconstruction_plot_data[, weight_label := factor(
   weight,
   levels = c("identity", "gaussian_refined"),
   labels = c("Identity", "Refined")
@@ -812,6 +879,137 @@ plot_metric_grid <- function(
   add_outer_annotations(x_label)
 }
 
+reconstruction_panel_limits <- function(data) {
+  positive <- c(data$mean_subject_q025, data$mean_subject_q975)
+  positive <- positive[is.finite(positive) & positive > 0]
+  if (!length(positive)) {
+    stop("No positive subject-specific reconstruction summaries to plot.")
+  }
+  limits <- range(positive)
+  log_limits <- log10(limits)
+  if (diff(log_limits) == 0) log_limits <- log_limits + c(-0.05, 0.05)
+  10^(log_limits + c(-0.06, 0.06) * diff(log_limits))
+}
+
+draw_reconstruction_panel <- function(
+  data, x_var, show_y = TRUE, ylim = NULL
+) {
+  x <- sort(unique(data[[x_var]]))
+  if (is.null(ylim)) ylim <- reconstruction_panel_limits(data)
+  x_limits <- range(x)
+  x_step <- if (length(x) > 1L) min(diff(x)) else 1
+  x_limits <- x_limits + c(-0.5, 0.5) * x_step
+  plot(
+    NA, xlim = x_limits, ylim = ylim, log = "y",
+    axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
+  )
+  grid(col = "grey90", lty = 1)
+  for (method in levels(data$weight_label)) {
+    values <- data[weight_label == method][order(get(x_var))]
+    if (!nrow(values)) next
+    polygon(
+      c(values[[x_var]], rev(values[[x_var]])),
+      c(values$mean_subject_q025, rev(values$mean_subject_q975)),
+      border = NA, col = method_fills[[method]]
+    )
+    lines(
+      values[[x_var]], values$mean_subject_median,
+      col = method_colors[[method]], lwd = 1.8
+    )
+    # Compact error bars show uncertainty across independent simulation runs;
+    # the much wider ribbon shows heterogeneity across subjects within a run.
+    cap_width <- 0.05 * x_step
+    segments(
+      values[[x_var]], values$median_mc_lower,
+      values[[x_var]], values$median_mc_upper,
+      col = method_colors[[method]], lwd = 1.1
+    )
+    segments(
+      values[[x_var]] - cap_width, values$median_mc_lower,
+      values[[x_var]] + cap_width, values$median_mc_lower,
+      col = method_colors[[method]], lwd = 1.1
+    )
+    segments(
+      values[[x_var]] - cap_width, values$median_mc_upper,
+      values[[x_var]] + cap_width, values$median_mc_upper,
+      col = method_colors[[method]], lwd = 1.1
+    )
+    points(
+      values[[x_var]], values$mean_subject_median,
+      col = method_colors[[method]], pch = 16, cex = 0.9
+    )
+  }
+  box(col = "grey30")
+  axis(
+    1, at = x, labels = format(x, trim = TRUE),
+    cex.axis = 0.92, gap.axis = -1
+  )
+  if (show_y) {
+    ticks <- pretty_log_ticks(ylim)
+    axis(
+      2, at = ticks, labels = format(ticks, scientific = TRUE),
+      las = 1, cex.axis = 0.88
+    )
+  }
+}
+
+add_reconstruction_annotations <- function(x_label) {
+  par(
+    fig = c(0, 1, 0, 1), mar = rep(0, 4), oma = rep(0, 4),
+    new = TRUE
+  )
+  plot.new()
+  plot.window(xlim = c(0, 1), ylim = c(0, 1), xaxs = "i", yaxs = "i")
+  legend(
+    "top", legend = names(method_colors), col = method_colors,
+    lty = 1, lwd = 2, pch = 16, pt.cex = 0.9,
+    horiz = TRUE, bty = "n", cex = 1.02, inset = 0.015
+  )
+  text(0.5, 0.064, x_label, cex = 1.02)
+  text(
+    0.014, 0.5, expression("Subject-specific relative SSE"),
+    srt = 90, adj = 0.5, cex = 1.02
+  )
+  text(
+    0.5, 0.027,
+    paste(
+      "Line/ribbon: means of run-specific medians and",
+      "2.5%-97.5% subject quantiles"
+    ),
+    cex = 0.64, col = "grey30"
+  )
+  text(
+    0.5, 0.010,
+    "Bars: 95% Monte Carlo CI for the mean of run-specific medians",
+    cex = 0.64, col = "grey30"
+  )
+}
+
+plot_reconstruction_grid <- function(
+  data, condition_var, condition_values, condition_labels,
+  x_var, x_label, filename,
+  width = if (length(condition_values) == 1L) 4.8 else 9.2,
+  height = 4.1
+) {
+  data <- data[get(condition_var) %in% condition_values]
+  shared_ylim <- reconstruction_panel_limits(data)
+  pdf(file.path(output_dir, filename), width = width, height = height)
+  on.exit(dev.off())
+  par(oma = c(4.4, 4.2, 3.4, 0.8))
+  layout(matrix(seq_along(condition_values), nrow = 1L))
+  for (index in seq_along(condition_values)) {
+    subset <- data[get(condition_var) == condition_values[[index]]]
+    par(mar = c(2.8, if (index == 1L) 3.2 else 1.0, 2.0, 0.6))
+    draw_reconstruction_panel(
+      subset, x_var,
+      show_y = index == 1L,
+      ylim = shared_ylim
+    )
+    title(main = condition_labels[[index]], cex.main = 0.98)
+  }
+  add_reconstruction_annotations(x_label)
+}
+
 dimension_grid <- c(20, 50, 100, 150, 200)
 dimension_means <- summary_data[
   n == 50 & sig == 0.1 & dependence == "independent" & p %in% dimension_grid
@@ -824,6 +1022,18 @@ plot_condition_grid(
   "distr", c("normal", "beta32", "t5"), c("Gaussian", "Beta(3,2)", "t(5)"),
   "p", "Spatial dimension (p = q)",
   "error_vs_dimension_n50_sig0p1_independent.pdf"
+)
+
+reconstruction_dimension_independent <- reconstruction_plot_data[
+  n == 50 & sig == 0.1 & dependence == "independent" &
+    p %in% dimension_grid & distr != "uniform"
+]
+plot_reconstruction_grid(
+  reconstruction_dimension_independent,
+  "distr", c("normal", "beta32", "t5"),
+  c("Gaussian", "Beta(3,2)", "t(5)"),
+  "p", "Spatial dimension (p = q)",
+  "reconstruction_vs_dimension_n50_sig0p1_independent.pdf"
 )
 
 dependent_means <- summary_data[
@@ -843,6 +1053,19 @@ plot_condition_grid(
   "error_vs_dimension_dependent_n50_sig0p1_normal.pdf"
 )
 
+reconstruction_dimension_dependent <- reconstruction_plot_data[
+  n == 50 & sig == 0.1 & distr == "normal" &
+    dependence != "independent" & p %in% dimension_grid
+]
+plot_reconstruction_grid(
+  reconstruction_dimension_dependent,
+  "dependence",
+  c("common_amplitude", "common_signed", "heavy_amplitude"),
+  c("Common amplitude", "Common signed", "Heavy amplitude"),
+  "p", "Spatial dimension (p = q)",
+  "reconstruction_vs_dimension_dependent_n50_sig0p1_normal.pdf"
+)
+
 sample_means <- summary_data[
   p == 30 & sig == 0.1 & distr == "normal" & dependence == "independent"
 ]
@@ -854,6 +1077,16 @@ plot_metric_grid(
   "error_vs_sample_size_p30_sig0p1_normal_independent.pdf"
 )
 
+reconstruction_sample <- reconstruction_plot_data[
+  p == 30 & sig == 0.1 & distr == "normal" & dependence == "independent"
+]
+plot_reconstruction_grid(
+  reconstruction_sample,
+  "distr", "normal", "Gaussian scores",
+  "n", "Number of subjects",
+  "reconstruction_vs_sample_size_p30_sig0p1_normal_independent.pdf"
+)
+
 noise_means <- summary_data[
   n == 50 & p == 30 & distr == "normal" & dependence == "independent"
 ]
@@ -863,6 +1096,16 @@ noise_differences <- difference_data[
 plot_metric_grid(
   noise_means, noise_differences, "sig", "Noise standard deviation",
   "error_vs_noise_n50_p30_normal_independent.pdf"
+)
+
+reconstruction_noise <- reconstruction_plot_data[
+  n == 50 & p == 30 & distr == "normal" & dependence == "independent"
+]
+plot_reconstruction_grid(
+  reconstruction_noise,
+  "distr", "normal", "Gaussian scores",
+  "sig", "Noise standard deviation",
+  "reconstruction_vs_noise_n50_p30_normal_independent.pdf"
 )
 
 cat("Base-graphics figures written to", output_dir, "\n")
