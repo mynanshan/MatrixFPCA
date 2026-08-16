@@ -10,6 +10,43 @@ fi
 #
 # Usage:
 #   experiment/run_simu_methods.sh [max_seed] [min_seed] [max_parallel] [options]
+#
+# Positional arguments (defaulted when the script is run with no arguments):
+#   max_seed       last simulation seed; default: 100
+#   min_seed       first simulation seed; default: 1
+#   max_parallel   maximum simultaneous tasks in each Slurm array; default: 40
+#                  (a smaller, resource-class-specific cap may also apply)
+# When using any option below, pass all three positional arguments first, as in
+# the examples. (The launcher's positional parser expects options after them.)
+#
+# Options:
+#   --profile NAME          scenario bundle to run; default: main
+#   --method-groups LIST    comma-separated scheduler groups; default: all
+#   --dry-run               create and print manifests without calling sbatch
+#   --no-overwrite          skip tasks whose status file already contains "ok"
+#
+# A normal full study needs ONE invocation with the default/main profile. The
+# profiles are alternative bundles, not pieces that must all be submitted:
+#   pilot    small calibration run; its data settings are repeated by main
+#   scaling  dimension-only subset (p=q=4,8,16,32) already included in main
+#   main     complete final-comparison scenario bundle
+# Thus `experiment/run_simu_methods.sh` alone schedules the main profile, seeds
+# 1--100, and every method group. Use pilot/scaling separately only when that
+# narrower calibration or diagnostic run is wanted.
+#
+# A "method group" is the unit placed in one Slurm array task. It keeps a slow
+# or timed-out competitor from losing results produced by another task. Most
+# groups contain one fitted method; `proposal` contains both MatFPCA variants:
+#   proposal -> matfpca_refined, matfpca_identity
+#   spline   -> spline_pca              product   -> sparse_product_fpca
+#   spaco    -> spaco_minus             happ_pace -> happ_pace
+#   happ_face -> happ_face              mfaces    -> mfaces
+#   mgsfpca  -> mgsfpca                shi       -> shi_mdfpca
+# Omitting --method-groups runs all groups. For example,
+# `--method-groups proposal,shi,mfaces` schedules only those three groups for
+# every profile scenario for which each group is eligible.
+#
+# Examples:
 #   experiment/run_simu_methods.sh 100 1 40 --profile main
 #   experiment/run_simu_methods.sh 3 1 20 --profile pilot --dry-run
 #   experiment/run_simu_methods.sh 100 1 40 --profile scaling --no-overwrite
@@ -149,6 +186,9 @@ if [[ "${1:-}" == "--worker" ]]; then
   exit 0
 fi
 
+# The first three arguments are positional for compatibility with existing
+# cluster commands. When omitted, they produce seeds 1--100 with a per-array
+# concurrency request of 40.
 max_seed="${1:-100}"
 min_seed="${2:-1}"
 max_parallel="${3:-40}"
@@ -158,6 +198,7 @@ if (($# >= 2)); then shift_count=2; fi
 if (($# >= 3)); then shift_count=3; fi
 shift "${shift_count}"
 
+# These defaults mean that no options are required for the complete main run.
 profile="main"
 dry_run=0
 no_overwrite=0
@@ -215,6 +256,9 @@ if ! command -v timeout >/dev/null 2>&1; then
   exit 2
 fi
 
+# Groups are scheduling/failure-isolation units, not experiment scenarios.
+# Selecting a subset changes which methods are fit, while --profile changes
+# which data-generating scenarios they are fit to.
 ALL_GROUPS=(proposal spline product spaco happ_pace happ_face mfaces mgsfpca shi)
 declare -A GROUP_SELECTED
 if [[ "${method_groups_arg}" == "all" ]]; then
@@ -235,6 +279,8 @@ else
 fi
 
 methods_for_group() {
+  # Expand each scheduler group into the --methods value understood by
+  # simu-methods.R. Only `proposal` intentionally fits two methods together.
   case "$1" in
     proposal) echo "matfpca_refined,matfpca_identity" ;;
     spline) echo "spline_pca" ;;
@@ -449,6 +495,9 @@ add_baseline_dimensions() {
 }
 
 case "${profile}" in
+  # Exactly one of these branches is used per invocation. `main` contains all
+  # scenarios from `scaling`; `pilot` uses equivalent baseline settings under
+  # calibration-oriented scenario names.
   pilot)
     add_scenario baseline_p4 50 4 4 51 2 4 0.1 normal independent 0 ar1 2 1 5
     add_scenario baseline_p8 50 8 8 51 2 4 0.1 normal independent 0 ar1 2 1 5
