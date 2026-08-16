@@ -2,19 +2,69 @@
 
 library(data.table)
 
-args <- commandArgs(trailingOnly = TRUE)
-results_dir <- if (length(args) >= 1L) args[[1L]] else
-  file.path("experiment", "results")
-output_dir <- if (length(args) >= 2L) args[[2L]] else
-  file.path("experiment", "summary")
-expected_repetitions <- if (length(args) >= 3L) as.integer(args[[3L]]) else NA_integer_
-requested_plot_nbasis <- if (length(args) >= 4L) args[[4L]] else NA_character_
-requested_plot_weight_folds <- if (length(args) >= 5L) {
-  as.integer(args[[5L]])
-} else {
+parser <- argparse::ArgumentParser(
+  description = "Summarize simple simulations and generate comparison plots."
+)
+parser$add_argument(
+  "--results_dir", default = file.path("experiment", "results"),
+  help = "Directory containing simulation CSV files (default: %(default)s)."
+)
+parser$add_argument(
+  "--output_dir", default = file.path("experiment", "summary"),
+  help = "Directory for summary tables and figures (default: %(default)s)."
+)
+parser$add_argument(
+  "--expected_repetitions", type = "integer",
+  help = paste(
+    "Expected number of repetitions when no manifest is available",
+    "(default: infer from results)."
+  )
+)
+parser$add_argument(
+  "--plot_nbasis",
+  help = "Basis setting to plot (default: theory when available)."
+)
+parser$add_argument(
+  "--plot_weight_folds", type = "integer",
+  help = "Weight-fold setting to plot (default: 10 when available)."
+)
+parser$add_argument(
+  "--plot_eigensystem",
+  help = "Eigensystem setting to plot (default: ar1 when available)."
+)
+parser$add_argument(
+  "--y_scale", choices = c("log", "linear", "normal"), default = "log",
+  help = paste(
+    "Y-axis scale for line/ribbon plots; normal is an alias for linear",
+    "(default: %(default)s)."
+  )
+)
+args <- parser$parse_args()
+
+results_dir <- args$results_dir
+output_dir <- args$output_dir
+expected_repetitions <- if (is.null(args$expected_repetitions)) {
   NA_integer_
+} else {
+  args$expected_repetitions
 }
-requested_plot_eigensystem <- if (length(args) >= 6L) args[[6L]] else NA_character_
+requested_plot_nbasis <- if (is.null(args$plot_nbasis)) {
+  NA_character_
+} else {
+  args$plot_nbasis
+}
+requested_plot_weight_folds <- if (is.null(args$plot_weight_folds)) {
+  NA_integer_
+} else {
+  args$plot_weight_folds
+}
+requested_plot_eigensystem <- if (is.null(args$plot_eigensystem)) {
+  NA_character_
+} else {
+  args$plot_eigensystem
+}
+requested_y_scale <- tolower(args$y_scale)
+if (requested_y_scale == "normal") requested_y_scale <- "linear"
 manifest_dirs <- c(
   file.path(results_dir, "manifests"),
   file.path("logs", "manifests")
@@ -597,24 +647,45 @@ pretty_log_ticks <- function(limits) {
   ticks[ticks >= limits[[1L]] & ticks <= limits[[2L]]]
 }
 
-mean_panel_limits <- function(data) {
-  positive <- c(data$lower, data$upper)
-  positive <- positive[is.finite(positive) & positive > 0]
-  limits <- range(positive)
-  log_limits <- log10(limits)
-  10^(log_limits + c(-0.06, 0.06) * diff(log_limits))
+panel_limits <- function(values, y_scale, description) {
+  values <- values[is.finite(values)]
+  if (y_scale == "log") values <- values[values > 0]
+  if (!length(values)) {
+    stop("No finite ", description, " values to plot on the ", y_scale, " scale.")
+  }
+  limits <- range(values)
+  if (y_scale == "log") {
+    log_limits <- log10(limits)
+    if (diff(log_limits) == 0) log_limits <- log_limits + c(-0.05, 0.05)
+    return(10^(log_limits + c(-0.06, 0.06) * diff(log_limits)))
+  }
+  if (diff(limits) == 0) {
+    padding <- max(abs(limits[[1L]]) * 0.05, .Machine$double.eps)
+  } else {
+    padding <- 0.06 * diff(limits)
+  }
+  limits + c(-padding, padding)
+}
+
+mean_panel_limits <- function(data, y_scale = requested_y_scale) {
+  panel_limits(
+    c(data$lower, data$upper), y_scale,
+    "median-error confidence-band"
+  )
 }
 
 draw_mean_panel <- function(
-  data, x_var, show_x = FALSE, show_y = TRUE, ylim = NULL
+  data, x_var, show_x = FALSE, show_y = TRUE, ylim = NULL,
+  y_scale = requested_y_scale
 ) {
   x <- sort(unique(data[[x_var]]))
-  if (is.null(ylim)) ylim <- mean_panel_limits(data)
+  if (is.null(ylim)) ylim <- mean_panel_limits(data, y_scale)
   x_limits <- range(x)
   x_padding <- if (length(x) > 1L) 0.5 * min(diff(x)) else 0.5
   x_limits <- x_limits + c(-x_padding, x_padding)
   plot(
-    NA, xlim = x_limits, ylim = ylim, log = "y",
+    NA, xlim = x_limits, ylim = ylim,
+    log = if (y_scale == "log") "y" else "",
     axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
   )
   grid(col = "grey90", lty = 1)
@@ -642,8 +713,15 @@ draw_mean_panel <- function(
     )
   }
   if (show_y) {
-    ticks <- pretty_log_ticks(ylim)
-    axis(2, at = ticks, labels = format(ticks, scientific = TRUE), las = 1, cex.axis = 0.88)
+    if (y_scale == "log") {
+      ticks <- pretty_log_ticks(ylim)
+      axis(
+        2, at = ticks, labels = format(ticks, scientific = TRUE),
+        las = 1, cex.axis = 0.88
+      )
+    } else {
+      axis(2, las = 1, cex.axis = 0.88)
+    }
   }
 }
 
@@ -772,7 +850,7 @@ plot_condition_grid <- function(
     row_mean_data <- means[
       metric == metrics[[row]] & get(condition_var) %in% condition_values
     ]
-    shared_mean_ylim <- mean_panel_limits(row_mean_data)
+    shared_mean_ylim <- mean_panel_limits(row_mean_data, requested_y_scale)
     for (condition_index in seq_along(condition_values)) {
       condition_value <- condition_values[[condition_index]]
       condition_label <- condition_labels[[condition_index]]
@@ -879,28 +957,25 @@ plot_metric_grid <- function(
   add_outer_annotations(x_label)
 }
 
-reconstruction_panel_limits <- function(data) {
-  positive <- c(data$mean_subject_q025, data$mean_subject_q975)
-  positive <- positive[is.finite(positive) & positive > 0]
-  if (!length(positive)) {
-    stop("No positive subject-specific reconstruction summaries to plot.")
-  }
-  limits <- range(positive)
-  log_limits <- log10(limits)
-  if (diff(log_limits) == 0) log_limits <- log_limits + c(-0.05, 0.05)
-  10^(log_limits + c(-0.06, 0.06) * diff(log_limits))
+reconstruction_panel_limits <- function(data, y_scale = requested_y_scale) {
+  panel_limits(
+    c(data$mean_subject_q025, data$mean_subject_q975), y_scale,
+    "subject-specific reconstruction"
+  )
 }
 
 draw_reconstruction_panel <- function(
-  data, x_var, show_y = TRUE, ylim = NULL
+  data, x_var, show_y = TRUE, ylim = NULL,
+  y_scale = requested_y_scale
 ) {
   x <- sort(unique(data[[x_var]]))
-  if (is.null(ylim)) ylim <- reconstruction_panel_limits(data)
+  if (is.null(ylim)) ylim <- reconstruction_panel_limits(data, y_scale)
   x_limits <- range(x)
   x_step <- if (length(x) > 1L) min(diff(x)) else 1
   x_limits <- x_limits + c(-0.5, 0.5) * x_step
   plot(
-    NA, xlim = x_limits, ylim = ylim, log = "y",
+    NA, xlim = x_limits, ylim = ylim,
+    log = if (y_scale == "log") "y" else "",
     axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
   )
   grid(col = "grey90", lty = 1)
@@ -945,11 +1020,15 @@ draw_reconstruction_panel <- function(
     cex.axis = 0.92, gap.axis = -1
   )
   if (show_y) {
-    ticks <- pretty_log_ticks(ylim)
-    axis(
-      2, at = ticks, labels = format(ticks, scientific = TRUE),
-      las = 1, cex.axis = 0.88
-    )
+    if (y_scale == "log") {
+      ticks <- pretty_log_ticks(ylim)
+      axis(
+        2, at = ticks, labels = format(ticks, scientific = TRUE),
+        las = 1, cex.axis = 0.88
+      )
+    } else {
+      axis(2, las = 1, cex.axis = 0.88)
+    }
   }
 }
 
@@ -992,7 +1071,7 @@ plot_reconstruction_grid <- function(
   height = 4.1
 ) {
   data <- data[get(condition_var) %in% condition_values]
-  shared_ylim <- reconstruction_panel_limits(data)
+  shared_ylim <- reconstruction_panel_limits(data, requested_y_scale)
   pdf(file.path(output_dir, filename), width = width, height = height)
   on.exit(dev.off())
   par(oma = c(4.4, 4.2, 3.4, 0.8))
@@ -1109,6 +1188,7 @@ plot_reconstruction_grid(
 )
 
 cat("Base-graphics figures written to", output_dir, "\n")
+cat("Line/ribbon plots use a", requested_y_scale, "y scale.\n")
 cat("Read", length(files), "files and", n_method_rows, "method rows.\n")
 cat(
   "Expected", nrow(expected_runs), "seed/config runs across",
