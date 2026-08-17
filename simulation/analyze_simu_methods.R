@@ -555,43 +555,6 @@ fwrite(comparison, file.path(args$output_dir, "method_comparison_complete.csv"))
 fwrite(publication_table, file.path(args$output_dir, "method_comparison_formatted.csv"))
 fwrite(primary_wide, file.path(args$output_dir, "relative_hs_error_wide.csv"))
 
-markdown <- c(
-  "# Complete method comparison",
-  "",
-  paste0(
-    "Profile: `", args$profile, "`; study version: `", args$study_version,
-    "`; expected seeds: 1-", expected_repetitions, "."
-  ),
-  "",
-  paste0(
-    "Completion: ", completion_overview$successful_method_fits, "/",
-    completion_overview$expected_method_fits, " expected method fits succeeded; ",
-    completion_overview$failed_method_fits, " failed and ",
-    completion_overview$missing_method_fits, " are missing."
-  ),
-  "",
-  paste(
-    "Entries are Monte Carlo mean (SD) across successful seeds.",
-    "Failures remain in the success column and are not included in metric means."
-  )
-)
-for (scenario_name in profile_scenarios) {
-  section <- publication_table[scenario == scenario_name]
-  markdown <- c(
-    markdown, "", paste0("## ", section$scenario_label[[1L]]), "",
-    "| Method | Relative HS error | Excess relative HS | Mean sin^2 angle | Runtime (s) | Successful |",
-    "|---|---:|---:|---:|---:|---:|",
-    paste0(
-      "| ", section$method_label, " | ", section$relative_hs_error,
-      " | ", section$excess_relative_hs_error,
-      " | ", section$mean_sin2_angle,
-      " | ", section$runtime_seconds,
-      " | ", section$successful_seeds, " |"
-    )
-  )
-}
-writeLines(markdown, file.path(args$output_dir, "method_comparison_tables.md"))
-
 print(completion_overview)
 if (nrow(method_failures)) {
   cat("\nMethod-level failures:\n")

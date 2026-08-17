@@ -248,14 +248,18 @@ For the complete paper-style comparison and a strict expected-run audit, use:
 
 ```bash
 Rscript simulation/analyze_simu_methods.R
+Rscript simulation/print_simu_method_tables.R
 ```
 
 By default this checks the 100-seed `main` design encoded by the launcher and
 writes machine-readable audit files, a complete long-form metric table, a wide
-relative-Hilbert--Schmidt-error table, and Markdown tables under
-`simulation/summary-methods/`. Method-level failures are counted separately
-from missing result files and scheduler failures; failed fits are shown in the
-completion columns but excluded from metric means. Pass `--fail_on_incomplete`
+relative-Hilbert--Schmidt-error table under `simulation/summary-methods/`.
+`print_simu_method_tables.R` reads the complete numeric table and prints the
+current scenario tables to the console, avoiding a second static copy of the
+results. Use `--metrics all` to include every summarized accuracy metric, or
+`--scenarios dim_p8,n100_p8` to print a subset. Method-level failures are
+counted separately from missing result files and scheduler failures; failed
+fits are shown in the completion columns but excluded from metric means. Pass `--fail_on_incomplete`
 in automated checks when any missing or failed expected fit should produce a
 nonzero exit status. The `pilot` and `scaling` subsets can instead be selected
 with `--profile pilot` or `--profile scaling`.
