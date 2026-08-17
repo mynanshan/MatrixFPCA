@@ -16,6 +16,9 @@ tests/testthat/_snaps/*.new
 **/*_cache/
 **/*_files/
 
+# Datasets
+data/
+
 # Generated project artifacts
 **/results*/
 **/plots*/

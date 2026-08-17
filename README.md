@@ -6,6 +6,24 @@ Reusable R implementation modules are kept in [`R/`](R/). Source
 [`R/matfpca.R`](R/matfpca.R) from the project root to load the MatFPCA
 implementation and its matrix-functional-data dependency.
 
+## ADNI application
+
+[`application/adni/adni_matfpca.R`](application/adni/adni_matfpca.R) applies MatFPCA to
+the longitudinal axial ADNI slices, including training-only temporal mean
+centering, a reproducible stratified image holdout, masked reconstruction
+diagnostics, FPC-score UMAP visualization, and leading-FPC plots. See
+[`application/adni/README.md`](application/adni/README.md) for the design choices,
+runtime controls, and generated outputs.
+
+## 2D fluid-flow application
+
+[`application/fluid/fluid_flow_matfpca.R`](application/fluid/fluid_flow_matfpca.R)
+simulates iid periodic 2D Navier--Stokes vorticity trajectories with random
+viscosities and initial conditions, exposes only irregular noisy snapshots to
+MatFPCA, and measures subject-level recovery on the complete latent time grid.
+See [`application/fluid/README.md`](application/fluid/README.md) for
+the PDE, numerical design, commands, and recovery outputs.
+
 ## Method-comparison simulation
 
 [`simulation/simu-methods.R`](simulation/simu-methods.R) benchmarks MatFPCA against HAPP–PACE/FACE, mFACEs, mGSFPCA, Shi et al.'s longitudinal-image MD-FPCA, SPACO-minus, sparse Product FPCA, and a spline-PCA baseline. Package and research-prototype adapters live in [`simulation/competitors/`](simulation/competitors/). The statistical formulation, mathematical descriptions of every competitor, identifiability-safe metrics, preliminary local results, and commands are in [`simulation/README-method-comparison.md`](simulation/README-method-comparison.md). Repeated Compute Canada experiments are submitted through [`simulation/run_simu_methods.sh`](simulation/run_simu_methods.sh).
