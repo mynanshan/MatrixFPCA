@@ -109,11 +109,74 @@
   solution[seq_len(nrow(H))]
 }
 
+.shi_score_fit <- function(design, response, ridge_multiplier = 0) {
+  H <- crossprod(design)
+  scale_H <- mean(diag(H))
+  if (!is.finite(scale_H) || scale_H <= 0) scale_H <- 1
+  penalty <- ridge_multiplier * scale_H
+  regularized <- 0.5 * (H + t(H)) + penalty * diag(nrow(H))
+  coefficients <- tryCatch(
+    solve(regularized, crossprod(design, response)),
+    error = function(error) qr.solve(
+      regularized, crossprod(design, response), tol = 1e-10
+    )
+  )
+  list(
+    coefficients = as.numeric(coefficients),
+    gram = H, regularized_gram = regularized, penalty = penalty
+  )
+}
+
+.shi_select_score_ridge <- function(design, response, block_size,
+                                    candidates = c(0, 1e-4, 1e-3, 1e-2, 1e-1, 1)) {
+  candidates <- sort(unique(as.numeric(candidates)))
+  if (!length(candidates) || any(!is.finite(candidates)) || any(candidates < 0)) {
+    stop("score-ridge candidates must be finite and nonnegative.")
+  }
+  prediction_sse <- numeric(length(candidates))
+  prediction_n <- numeric(length(candidates))
+  for (candidate_index in seq_along(candidates)) {
+    candidate <- candidates[candidate_index]
+    for (i in seq_along(response)) {
+      nvisit <- length(response[[i]]) / block_size
+      if (nvisit < 2L || nvisit != as.integer(nvisit)) next
+      visit <- rep(seq_len(nvisit), each = block_size)
+      for (held_out in seq_len(nvisit)) {
+        train <- visit != held_out
+        validation <- !train
+        score <- .shi_score_fit(
+          design[[i]][train, , drop = FALSE], response[[i]][train], candidate
+        )$coefficients
+        residual <- response[[i]][validation] -
+          design[[i]][validation, , drop = FALSE] %*% score
+        prediction_sse[candidate_index] <- prediction_sse[candidate_index] +
+          sum(residual^2)
+        prediction_n[candidate_index] <- prediction_n[candidate_index] + length(residual)
+      }
+    }
+  }
+  cv_error <- prediction_sse / prediction_n
+  valid <- is.finite(cv_error)
+  selected <- if (any(valid)) {
+    which.min(ifelse(valid, cv_error, Inf))
+  } else {
+    which.min(candidates)
+  }
+  list(
+    ridge_multiplier = candidates[selected],
+    candidates = candidates, cv_error = cv_error
+  )
+}
+
 fit_shi_mdfpca <- function(data, ncomp = 5L, nbasis_time = 7L,
                            nbasis_row = 5L, nbasis_col = 5L,
                            center = TRUE, smoothness = 0,
                            maxit = 100L, tolerance = 1e-5,
                            ridge = 1e-8, mean_ridge = 1e-6,
+                           score_ridge = 0,
+                           score_ridge_candidates = c(
+                             0, 1e-4, 1e-3, 1e-2, 1e-1, 1
+                           ),
                            noise_correct = TRUE, trace = FALSE) {
   setup <- .shi_tensor_setup(
     data, nbasis_time, nbasis_row, nbasis_col, center, mean_ridge
@@ -125,6 +188,15 @@ fit_shi_mdfpca <- function(data, ncomp = 5L, nbasis_time = 7L,
   ncomp <- min(max(1L, as.integer(ncomp)), n - 1L, ncol(X[[1L]]))
   maxit <- max(1L, as.integer(maxit))
   if (!is.finite(smoothness) || smoothness < 0) stop("smoothness must be nonnegative.")
+  automatic_score_ridge <- is.character(score_ridge) &&
+    length(score_ridge) == 1L && identical(tolower(score_ridge), "auto")
+  if (!automatic_score_ridge) {
+    score_ridge <- as.numeric(score_ridge)[1L]
+    if (!is.finite(score_ridge) || score_ridge < 0) {
+      stop("score_ridge must be 'auto' or a finite nonnegative number.")
+    }
+  }
+  fitting_score_ridge <- if (automatic_score_ridge) 0 else score_ridge
 
   # A stable, data-driven initialization. It affects only the starting point
   # of the published alternating least-squares criterion.
@@ -157,9 +229,10 @@ fit_shi_mdfpca <- function(data, ncomp = 5L, nbasis_time = 7L,
 
     for (iteration in seq_len(maxit)) {
       current <- cbind(coefficients, beta)
-      scores <- lapply(seq_len(n), function(i) {
-        stats::coef(stats::lm.fit(X[[i]] %*% current, y[[i]]))
+      score_fits <- lapply(seq_len(n), function(i) {
+        .shi_score_fit(X[[i]] %*% current, y[[i]], fitting_score_ridge)
       })
+      scores <- lapply(score_fits, `[[`, "coefficients")
       alpha <- vapply(scores, function(score) score[component], numeric(1L))
       residual <- lapply(seq_len(n), function(i) {
         if (component == 1L) return(y[[i]])
@@ -192,9 +265,26 @@ fit_shi_mdfpca <- function(data, ncomp = 5L, nbasis_time = 7L,
     coefficients <- cbind(coefficients, beta)
   }
 
-  score_matrix <- t(vapply(seq_len(n), function(i) {
-    as.numeric(stats::coef(stats::lm.fit(X[[i]] %*% coefficients, y[[i]])))
-  }, numeric(ncomp)))
+  score_design <- lapply(X, `%*%`, coefficients)
+  score_ridge_selection <- if (automatic_score_ridge) {
+    .shi_select_score_ridge(
+      score_design, y, block_size = setup$p * setup$q,
+      candidates = score_ridge_candidates
+    )
+  } else {
+    list(
+      ridge_multiplier = score_ridge,
+      candidates = score_ridge,
+      cv_error = NA_real_
+    )
+  }
+  selected_score_ridge <- score_ridge_selection$ridge_multiplier
+  score_fits <- lapply(seq_len(n), function(i) {
+    .shi_score_fit(score_design[[i]], y[[i]], selected_score_ridge)
+  })
+  score_matrix <- t(vapply(
+    score_fits, `[[`, numeric(ncomp), "coefficients"
+  ))
   fitted <- lapply(seq_len(n), function(i) as.numeric(
     X[[i]] %*% coefficients %*% score_matrix[i, ]
   ))
@@ -207,13 +297,11 @@ fit_shi_mdfpca <- function(data, ncomp = 5L, nbasis_time = 7L,
   noise_covariance <- matrix(0, ncomp, ncomp)
   if (noise_correct && is.finite(sig2) && sig2 > 0) {
     noise_covariance <- Reduce(`+`, lapply(seq_len(n), function(i) {
-      score_design <- X[[i]] %*% coefficients
-      gram_i <- crossprod(score_design)
-      scale_i <- max(1, max(abs(diag(gram_i))))
-      tryCatch(
-        solve(gram_i + 1e-8 * scale_i * diag(ncomp)),
+      inverse_regularized <- tryCatch(
+        solve(score_fits[[i]]$regularized_gram),
         error = function(error) matrix(0, ncomp, ncomp)
       )
+      inverse_regularized %*% score_fits[[i]]$gram %*% inverse_regularized
     })) * sig2 / n
     score_covariance <- score_covariance - noise_covariance
   }
@@ -243,6 +331,10 @@ fit_shi_mdfpca <- function(data, ncomp = 5L, nbasis_time = 7L,
       iterations = iterations,
       converged = converged,
       smoothness = smoothness,
+      fitting_score_ridge = fitting_score_ridge,
+      selected_score_ridge = selected_score_ridge,
+      score_ridge_candidates = score_ridge_selection$candidates,
+      score_ridge_cv_error = score_ridge_selection$cv_error,
       noise_correct = noise_correct,
       noise_score_covariance = noise_covariance,
       coefficients = coefficients,

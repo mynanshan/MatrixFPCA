@@ -465,7 +465,15 @@ evaluate_full_eigenfit <- function(fit, truth, eval_ncomp = 5L) {
   )
 }
 
-evaluate_product_fit <- function(fit, truth, eval_ncomp = 5L) {
+evaluate_product_fit <- function(fit, truth, eval_ncomp = 5L,
+                                 covariance_ncomp = NULL) {
+  if (!is.null(covariance_ncomp)) {
+    return(evaluate_full_eigenfit(
+      product_covariance_eigenfit(fit$C, covariance_ncomp),
+      truth,
+      eval_ncomp = eval_ncomp
+    ))
+  }
   covariance_error2 <- max(0, matfcovDiffNorm2(fit$C, truth))
   identifiable_rank <- .identifiable_evaluation_rank(truth, eval_ncomp)
   eigen_metrics <- evaluate_full_eigenfit(
@@ -501,4 +509,3 @@ for (.competitor_file in c(
   source(file.path(.competitor_directory, .competitor_file))
 }
 rm(.competitor_directory, .competitor_file)
-

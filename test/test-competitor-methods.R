@@ -21,6 +21,20 @@ stopifnot(
   truth_metrics[["rel_eigenvalue_sse"]] < 1e-10
 )
 
+# A fixed-rank comparison must truncate a product-covariance estimator too;
+# otherwise MatFPCA would be scored at full rank while competitors are scored
+# at the rank supplied through --cov_ncomp.
+rank_two_product_metrics <- evaluate_product_fit(
+  list(C = truth), truth, eval_ncomp = 2L, covariance_ncomp = 2L
+)
+
+stopifnot(
+  rank_two_product_metrics[["estimated_rank"]] == 2L,
+  rank_two_product_metrics[["oracle_rank_rel_hs"]] > 0,
+  abs(rank_two_product_metrics[["rel_hs_cov"]] -
+      rank_two_product_metrics[["oracle_rank_rel_hs"]]) < 1e-10
+)
+
 # The requested rank two cuts the repeated eigenvalue 3 * 1 = 1 * 3, so the
 # identifiable evaluation target must include the complete three-dimensional
 # leading eigenspace.

@@ -46,24 +46,34 @@ parser$add_argument("--mgs_basis_candidates", default = "7",
                     help = "Comma-separated per-pixel spline basis sizes.")
 parser$add_argument("--mgs_mu_nbasis", type = "integer", default = 7L)
 parser$add_argument("--mgs_maxit", type = "integer", default = 300L)
-parser$add_argument("--product_spatial_npc", type = "integer", default = 5L)
-parser$add_argument("--product_temporal_npc", type = "integer", default = 3L)
+parser$add_argument("--product_spatial_npc", type = "integer", default = 10L)
+parser$add_argument("--product_temporal_npc", type = "integer", default = 5L)
 parser$add_argument("--shi_ncomp", type = "integer", default = 5L)
 parser$add_argument("--shi_nbasis_time", type = "integer", default = 7L)
 parser$add_argument("--shi_nbasis_row", type = "integer", default = 5L)
 parser$add_argument("--shi_nbasis_col", type = "integer", default = 5L)
 parser$add_argument("--shi_maxit", type = "integer", default = 100L)
 parser$add_argument("--shi_tolerance", type = "double", default = 1e-5)
+parser$add_argument("--shi_smoothness", type = "double", default = 1e-2)
+parser$add_argument("--shi_score_ridge", default = "auto",
+                    help = "Shi score ridge multiplier, or 'auto' for visit-block CV.")
 parser$add_argument("--spaco_rank", type = "integer", default = 5L)
 parser$add_argument("--spaco_nbasis", type = "integer", default = 7L)
 parser$add_argument("--spaco_smoothness", type = "double", default = 1e-2)
+parser$add_argument("--spaco_ridge", type = "double", default = 1e-8,
+                    help = "SPACO numerical diagonal-loading multiplier.")
+parser$add_argument("--spaco_score_ridge", default = "auto",
+                    help = "SPACO score ridge multiplier, or 'auto' for visit-block CV.")
 parser$add_argument("--spaco_maxit", type = "integer", default = 100L)
 parser$add_argument("--allow_slow_competitors", type = "integer", default = 0L,
                     help = "Allow mFACEs beyond --mfaces_max_outcomes.")
 parser$add_argument("--eval_ncomp", type = "integer", default = 5L,
                     help = "Leading global eigenspace dimension to evaluate.")
 parser$add_argument("--cov_ncomp", type = "integer", default = 0L,
-                    help = "Global competitor rank; 0 retains all numerical components.")
+                    help = paste(
+                      "Common covariance rank for every method, including MatFPCA;",
+                      "0 retains each method's full numerical rank."
+                    ))
 parser$add_argument("--methods", type = "character",
                     default = paste(c(
                       "matfpca_refined", "matfpca_identity", "happ_pace",
@@ -112,6 +122,27 @@ npc_time <- min(nt, max(1L, args$rank_time))
 nbasis <- if (args$nbasis <= 0L) "theory" else max(3L, min(nt, args$nbasis))
 eval_ncomp <- max(1L, args$eval_ncomp)
 cov_ncomp <- if (args$cov_ncomp <= 0L) NULL else max(eval_ncomp, args$cov_ncomp)
+if (!is.finite(args$spaco_ridge) || args$spaco_ridge < 0) {
+  stop("spaco_ridge must be finite and nonnegative.")
+}
+spaco_score_ridge <- if (tolower(args$spaco_score_ridge) == "auto") {
+  "auto"
+} else {
+  parsed <- suppressWarnings(as.numeric(args$spaco_score_ridge))
+  if (length(parsed) != 1L || !is.finite(parsed) || parsed < 0) {
+    stop("spaco_score_ridge must be 'auto' or a finite nonnegative number.")
+  }
+  parsed
+}
+shi_score_ridge <- if (tolower(args$shi_score_ridge) == "auto") {
+  "auto"
+} else {
+  parsed <- suppressWarnings(as.numeric(args$shi_score_ridge))
+  if (length(parsed) != 1L || !is.finite(parsed) || parsed < 0) {
+    stop("shi_score_ridge must be 'auto' or a finite nonnegative number.")
+  }
+  parsed
+}
 ncores <- max(1L, args$ncores)
 blas_threads <- if (args$blas_threads <= 0L) {
   if (ncores > 1L) 1L else ncores
@@ -154,6 +185,7 @@ cat(
   "  methods: ", paste(methods, collapse = ", "), "\n",
   "  method workers, BLAS threads: ", ncores, ", ", blas_threads, "\n",
   "  evaluation eigenspace rank: ", eval_ncomp, "\n",
+  "  common covariance rank: ", if (is.null(cov_ncomp)) "full" else cov_ncomp, "\n",
   sep = ""
 )
 
@@ -246,7 +278,9 @@ fit_one <- function(method) {
         nbasis_row = args$shi_nbasis_row,
         nbasis_col = args$shi_nbasis_col,
         maxit = args$shi_maxit,
-        tolerance = args$shi_tolerance
+        tolerance = args$shi_tolerance,
+        smoothness = args$shi_smoothness,
+        score_ridge = shi_score_ridge
       ),
       spaco_minus = fit_spaco_minus(
         data,
@@ -257,6 +291,8 @@ fit_one <- function(method) {
         },
         nbasis = args$spaco_nbasis,
         smoothness = args$spaco_smoothness,
+        ridge = args$spaco_ridge,
+        score_ridge = spaco_score_ridge,
         maxit = args$spaco_maxit
       ),
       sparse_product_fpca = fit_sparse_product_fpca(
@@ -274,7 +310,9 @@ fit_one <- function(method) {
     )
   })[["elapsed"]]
   metrics <- if (startsWith(method, "matfpca_")) {
-    evaluate_product_fit(fit, truth, eval_ncomp = eval_ncomp)
+    evaluate_product_fit(
+      fit, truth, eval_ncomp = eval_ncomp, covariance_ncomp = cov_ncomp
+    )
   } else {
     evaluate_full_eigenfit(fit, truth, eval_ncomp = eval_ncomp)
   }
@@ -328,9 +366,64 @@ rows <- data.table::rbindlist(lapply(methods, function(method) {
     dependence_param = generated$dependence_param,
     result_tag = if (nzchar(args$result_tag)) args$result_tag else NA_character_,
     eval_ncomp = eval_ncomp,
+    cov_ncomp = if (is.null(cov_ncomp)) NA_integer_ else cov_ncomp,
     happ_npc = args$happ_npc,
+    product_spatial_npc = args$product_spatial_npc,
+    product_temporal_npc = args$product_temporal_npc,
+    mgs_rank_candidates = paste(mgs_rank_candidates, collapse = ","),
+    mgs_basis_candidates = paste(mgs_basis_candidates, collapse = ","),
+    shi_nbasis_time = args$shi_nbasis_time,
+    shi_nbasis_row = args$shi_nbasis_row,
+    shi_nbasis_col = args$shi_nbasis_col,
+    shi_smoothness = args$shi_smoothness,
+    shi_score_ridge = as.character(shi_score_ridge),
+    shi_selected_score_ridge = if (method == "shi_mdfpca" && !is.null(result$fit)) {
+      result$fit$diagnostics$selected_score_ridge
+    } else {
+      NA_real_
+    },
+    spaco_smoothness = args$spaco_smoothness,
+    spaco_ridge = args$spaco_ridge,
+    spaco_score_ridge = as.character(spaco_score_ridge),
+    spaco_selected_score_ridge = if (method == "spaco_minus" && !is.null(result$fit)) {
+      result$fit$diagnostics$selected_score_ridge
+    } else {
+      NA_real_
+    },
+    spaco_minimum_cv_score_ridge = if (
+      method == "spaco_minus" && !is.null(result$fit)
+    ) {
+      result$fit$diagnostics$minimum_cv_score_ridge
+    } else {
+      NA_real_
+    },
+    spaco_score_ridge_candidates = if (
+      method == "spaco_minus" && !is.null(result$fit)
+    ) {
+      paste(result$fit$diagnostics$score_ridge_candidates, collapse = ",")
+    } else {
+      NA_character_
+    },
+    spaco_score_ridge_cv_error = if (
+      method == "spaco_minus" && !is.null(result$fit)
+    ) {
+      paste(signif(result$fit$diagnostics$score_ridge_cv_error, 8L), collapse = ",")
+    } else {
+      NA_character_
+    },
+    spaco_score_ridge_cv_se = if (
+      method == "spaco_minus" && !is.null(result$fit)
+    ) {
+      paste(signif(result$fit$diagnostics$score_ridge_cv_se, 8L), collapse = ",")
+    } else {
+      NA_character_
+    },
+    spaco_maxit = args$spaco_maxit,
     spline_nbasis = args$spline_nbasis,
     spline_smoothness = args$spline_smoothness,
+    observed_visits_min = min(generated$visit_counts),
+    observed_visits_mean = mean(generated$visit_counts),
+    observed_visits_max = max(generated$visit_counts),
     failed_pixels = if (method %in% c("happ_pace", "happ_face") && !is.null(result$fit)) {
       pixel_status <- result$fit$diagnostics$pixel_status
       as.integer(sum(pixel_status[names(pixel_status) != "ok"]))

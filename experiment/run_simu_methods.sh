@@ -21,6 +21,7 @@ fi
 #
 # Options:
 #   --profile NAME          scenario bundle to run; default: main
+#   --study-version NAME    tag separating incompatible configurations; default: v3
 #   --method-groups LIST    comma-separated scheduler groups; default: all
 #   --dry-run               create and print manifests without calling sbatch
 #   --no-overwrite          skip tasks whose status file already contains "ok"
@@ -28,8 +29,8 @@ fi
 # A normal full study needs ONE invocation with the default/main profile. The
 # profiles are alternative bundles, not pieces that must all be submitted:
 #   pilot    small calibration run; its data settings are repeated by main
-#   scaling  dimension-only subset (p=q=4,8,16,32) already included in main
-#   main     complete final-comparison scenario bundle
+#   scaling  dimension-only subset (p=q=8,16,32) already included in main
+#   main     complete final-comparison bundle, including rank sensitivity
 # Thus `experiment/run_simu_methods.sh` alone schedules the main profile, seeds
 # 1--100, and every method group. Use pilot/scaling separately only when that
 # narrower calibration or diagnostic run is wanted.
@@ -53,14 +54,15 @@ fi
 #   experiment/run_simu_methods.sh 100 1 20 --method-groups proposal,shi,mfaces
 #
 # Profiles:
-#   pilot    baseline p=q=4 and 8, intended for resource calibration.
-#   scaling  p=q=4,8,16,32 at the baseline data-generating setting.
-#   main     dimension, sample size, sparsity, noise, spectrum, score-tail,
-#            and score-dependence settings for the final comparison table.
+#   pilot    baseline p=q=8, intended for resource calibration.
+#   scaling  p=q=8,16,32 at the baseline data-generating setting.
+#   main     dimension, covariance-rank, sample-size, sparsity, noise,
+#            spectrum, score-tail, and score-dependence settings.
 #
 # Each array task fits one method group. Consequently, a timeout in mFACEs or
-# Shi MD-FPCA cannot erase completed results from faster methods. Eligibility
-# is method-specific: only scalable methods are scheduled at p=16 or p=32.
+# Shi MD-FPCA cannot erase completed results from faster methods. Every method
+# except the quadratic-cost mFACEs is scheduled through p=32. mFACEs remains a
+# p=8 comparator because it fits (pq)(pq+1)/2 covariance surfaces.
 
 if [[ "${1:-}" == "--worker" ]]; then
   ROOT_DIR="${3:?project root was not passed to the Slurm worker}"
@@ -141,8 +143,16 @@ run_array_task() {
     --happ_npc 3
     --mfaces_max_outcomes 100
     --allow_slow_competitors 1
+    --mgs_rank_candidates 3
+    --mgs_basis_candidates 7
+    --product_spatial_npc 10
+    --product_temporal_npc 5
     --shi_ncomp "${cov_ncomp}"
+    --shi_smoothness 0.01
+    --shi_score_ridge auto
     --spaco_rank "${cov_ncomp}"
+    --spaco_ridge 0.00000001
+    --spaco_score_ridge auto
     --ncores "${fit_cores}"
     --blas_threads "${blas_threads}"
     --backend multicore
@@ -200,6 +210,7 @@ shift "${shift_count}"
 
 # These defaults mean that no options are required for the complete main run.
 profile="main"
+study_version="v3"
 dry_run=0
 no_overwrite=0
 method_groups_arg="all"
@@ -211,6 +222,14 @@ while (($#)); do
       ;;
     --profile=*)
       profile="${1#*=}"
+      shift
+      ;;
+    --study-version)
+      study_version="${2:?--study-version requires a tag}"
+      shift 2
+      ;;
+    --study-version=*)
+      study_version="${1#*=}"
       shift
       ;;
     --method-groups)
@@ -251,6 +270,10 @@ case "${profile}" in
   pilot|scaling|main) ;;
   *) echo "Unknown profile: ${profile}" >&2; exit 2 ;;
 esac
+if ! [[ "${study_version}" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+  echo "study-version must contain only letters, digits, underscores, or hyphens" >&2
+  exit 2
+fi
 if ! command -v timeout >/dev/null 2>&1; then
   echo "GNU timeout is required." >&2
   exit 2
@@ -297,9 +320,8 @@ methods_for_group() {
 
 max_dimension_for_group() {
   case "$1" in
-    proposal|product|spaco|shi) echo 32 ;;
-    spline|happ_pace|mgsfpca) echo 16 ;;
-    happ_face|mfaces) echo 8 ;;
+    mfaces) echo 8 ;;
+    proposal|spline|product|spaco|happ_pace|happ_face|mgsfpca|shi) echo 32 ;;
     *) echo 0 ;;
   esac
 }
@@ -317,7 +339,7 @@ resource_for_group() {
       if (( dimension <= 8 )); then echo parallel_small; else echo parallel; fi
       ;;
     happ_face)
-      echo slow_small
+      if (( dimension <= 8 )); then echo slow_small; else echo slow; fi
       ;;
     shi)
       if (( dimension <= 8 )); then echo slow_small; else echo slow; fi
@@ -344,23 +366,9 @@ blas_threads_for_group() {
 }
 
 timeout_for_group() {
-  local group="$1" dimension="$2"
-  if (( dimension <= 8 )); then
-    case "${group}" in
-      proposal|spline) echo "${MATFPCA_TIMEOUT_FAST_SMALL:-10m}" ;;
-      product|spaco|mgsfpca) echo "${MATFPCA_TIMEOUT_MEDIUM_SMALL:-20m}" ;;
-      happ_pace) echo "${MATFPCA_TIMEOUT_PARALLEL_SMALL:-20m}" ;;
-      happ_face|shi) echo "${MATFPCA_TIMEOUT_SLOW_SMALL:-20m}" ;;
-      mfaces) echo "${MATFPCA_TIMEOUT_MFACES:-20m}" ;;
-    esac
-    return
-  fi
-  case "${group}" in
-    proposal|spline) echo "${MATFPCA_TIMEOUT_FAST:-50m}" ;;
-    product) echo "${MATFPCA_TIMEOUT_PRODUCT:-90m}" ;;
-    spaco|mgsfpca|happ_pace) echo "${MATFPCA_TIMEOUT_MEDIUM:-210m}" ;;
-    shi) echo "${MATFPCA_TIMEOUT_SHI:-330m}" ;;
-  esac
+  # A common per-fit budget makes eligibility reproducible and prevents a
+  # favorable method from receiving a more generous accuracy/runtime tradeoff.
+  echo "${MATFPCA_METHOD_TIMEOUT:-60m}"
 }
 
 RESOURCE_CLASSES=(fast_small fast medium_small medium parallel_small parallel slow_small slow mfaces)
@@ -385,15 +393,15 @@ mem_for_class() {
 }
 time_for_class() {
   case "$1" in
-    fast_small) echo "${MATFPCA_TIME_FAST_SMALL:-0:15:00}" ;;
-    fast) echo "${MATFPCA_TIME_FAST:-1:00:00}" ;;
-    medium_small) echo "${MATFPCA_TIME_MEDIUM_SMALL:-0:30:00}" ;;
+    fast_small) echo "${MATFPCA_TIME_FAST_SMALL:-1:15:00}" ;;
+    fast) echo "${MATFPCA_TIME_FAST:-1:15:00}" ;;
+    medium_small) echo "${MATFPCA_TIME_MEDIUM_SMALL:-1:15:00}" ;;
     medium) echo "${MATFPCA_TIME_MEDIUM:-4:00:00}" ;;
-    parallel_small) echo "${MATFPCA_TIME_PARALLEL_SMALL:-0:30:00}" ;;
+    parallel_small) echo "${MATFPCA_TIME_PARALLEL_SMALL:-1:15:00}" ;;
     parallel) echo "${MATFPCA_TIME_PARALLEL:-4:00:00}" ;;
-    slow_small) echo "${MATFPCA_TIME_SLOW_SMALL:-0:30:00}" ;;
+    slow_small) echo "${MATFPCA_TIME_SLOW_SMALL:-1:15:00}" ;;
     slow) echo "${MATFPCA_TIME_SLOW:-6:00:00}" ;;
-    mfaces) echo "${MATFPCA_TIME_MFACES:-0:30:00}" ;;
+    mfaces) echo "${MATFPCA_TIME_MFACES:-1:15:00}" ;;
   esac
 }
 parallel_cap_for_class() {
@@ -421,33 +429,13 @@ done
 declare -A SEEN_SCENARIOS
 scenario_count=0
 skipped_dimension=0
-skipped_scenario_policy=0
 skipped_existing=0
-
-scenario_allowed_for_group() {
-  local scenario="$1" group="$2"
-  case "${group}" in
-    # The quadratic collection of cross-covariance surfaces makes mFACEs the
-    # most restrictive method. Keep only the two baseline dimensions and one
-    # denser-visit sensitivity setting.
-    mfaces)
-      [[ "${scenario}" =~ ^(baseline_p4|baseline_p8|dim_p4|dim_p8|visits_20_40_p8)$ ]]
-      ;;
-    # FACE is much slower than PACE and showed only a small accuracy gain in
-    # pilots, so use it for the baseline, denser visits, and noise sensitivity.
-    happ_face)
-      [[ "${scenario}" =~ ^(baseline_p4|baseline_p8|dim_p4|dim_p8|visits_20_40_p8|noise_05_p8)$ ]]
-      ;;
-    *)
-      return 0
-      ;;
-  esac
-}
 
 add_scenario() {
   local scenario="$1" n="$2" p="$3" q="$4" nt="$5" s1="$6" s2="$7"
   local sigma="$8" distribution="$9" dependence="${10}" dep_param="${11}"
   local eigensystem="${12}" eigvec_set="${13}" eigval_set="${14}" rank_time="${15}"
+  local cov_ncomp="${16:-9}"
   if [[ -n "${SEEN_SCENARIOS[${scenario}]:-}" ]]; then return; fi
   SEEN_SCENARIOS["${scenario}"]=1
   scenario_count=$((scenario_count + 1))
@@ -456,16 +444,12 @@ add_scenario() {
   for ((seed = min_seed; seed <= max_seed; seed++)); do
     for group in "${ALL_GROUPS[@]}"; do
       if [[ -z "${GROUP_SELECTED[${group}]:-}" ]]; then continue; fi
-      if ! scenario_allowed_for_group "${scenario}" "${group}"; then
-        skipped_scenario_policy=$((skipped_scenario_policy + 1))
-        continue
-      fi
       max_p="$(max_dimension_for_group "${group}")"
       if (( p > max_p || q > max_p )); then
         skipped_dimension=$((skipped_dimension + 1))
         continue
       fi
-      job_id="${scenario}_sd${seed}_${group}"
+      job_id="${study_version}_${scenario}_sd${seed}_${group}"
       if (( no_overwrite )) && [[ -s "${STATUS_DIR}/${job_id}.status" ]] &&
           grep -qx "ok" "${STATUS_DIR}/${job_id}.status"; then
         skipped_existing=$((skipped_existing + 1))
@@ -481,7 +465,7 @@ add_scenario() {
         "${s1}" "${s2}" "${sigma}" "${distribution}" "${dependence}" \
         "${dep_param}" "${eigensystem}" "${eigvec_set}" "${eigval_set}" \
         "${rank_time}" "${group}" "${methods}" "${fit_cores}" "${blas_threads}" \
-        "${timeout_limit}" 8 >> "${manifest_by_class[${resource}]}"
+        "${timeout_limit}" "${cov_ncomp}" >> "${manifest_by_class[${resource}]}"
       task_count_by_class["${resource}"]=$((task_count_by_class["${resource}"] + 1))
     done
   done
@@ -489,17 +473,16 @@ add_scenario() {
 
 add_baseline_dimensions() {
   local p
-  for p in 4 8 16 32; do
+  for p in 8 16 32; do
     add_scenario "dim_p${p}" 50 "${p}" "${p}" 51 2 4 0.1 normal independent 0 ar1 2 1 5
   done
 }
 
 case "${profile}" in
   # Exactly one of these branches is used per invocation. `main` contains all
-  # scenarios from `scaling`; `pilot` uses equivalent baseline settings under
-  # calibration-oriented scenario names.
+  # scenarios from `scaling`; `pilot` uses the equivalent p=8 setting under a
+  # calibration-oriented scenario name.
   pilot)
-    add_scenario baseline_p4 50 4 4 51 2 4 0.1 normal independent 0 ar1 2 1 5
     add_scenario baseline_p8 50 8 8 51 2 4 0.1 normal independent 0 ar1 2 1 5
     ;;
   scaling)
@@ -507,10 +490,14 @@ case "${profile}" in
     ;;
   main)
     add_baseline_dimensions
+    # The p=8 baseline is also evaluated below and above the primary common
+    # covariance rank 9. The requested leading-five eigenspace expands to six
+    # components because its boundary intersects a repeated true eigenvalue.
+    add_scenario rank6_p8 50 8 8 51 2 4 0.1 normal independent 0 ar1 2 1 5 6
+    add_scenario rank12_p8 50 8 8 51 2 4 0.1 normal independent 0 ar1 2 1 5 12
     add_scenario n25_p8 25 8 8 51 2 4 0.1 normal independent 0 ar1 2 1 5
     add_scenario n100_p8 100 8 8 51 2 4 0.1 normal independent 0 ar1 2 1 5
     add_scenario visits_20_40_p8 50 8 8 51 4 8 0.1 normal independent 0 ar1 2 1 5
-    add_scenario visits_30_60_p8 50 8 8 51 6 12 0.1 normal independent 0 ar1 2 1 5
     add_scenario noise_05_p8 50 8 8 51 2 4 0.5 normal independent 0 ar1 2 1 5
     add_scenario spectral_p8 50 8 8 51 2 4 0.1 normal independent 0 spectral 2 2 9
     add_scenario t5_p8 50 8 8 51 2 4 0.1 t5 independent 0 ar1 2 1 5
@@ -523,12 +510,12 @@ for resource in "${RESOURCE_CLASSES[@]}"; do
   task_count=$((task_count + task_count_by_class["${resource}"]))
 done
 echo "Profile: ${profile}"
+echo "Study version: ${study_version}"
 echo "Scenarios: ${scenario_count}"
 echo "Seed range: ${min_seed}-${max_seed}"
 echo "Selected method groups: ${!GROUP_SELECTED[*]}"
 echo "Array tasks: ${task_count}"
 echo "Skipped by method-specific dimension limits: ${skipped_dimension}"
-echo "Skipped by method-specific scenario policies: ${skipped_scenario_policy}"
 echo "Skipped completed tasks: ${skipped_existing}"
 for resource in "${RESOURCE_CLASSES[@]}"; do
   echo "${resource}: ${task_count_by_class[${resource}]} tasks; manifest=${manifest_by_class[${resource}]}"

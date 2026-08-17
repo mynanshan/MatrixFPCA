@@ -178,8 +178,11 @@ gen_data_simple <- function(
   if (is.null(sampling_ratio)) {
     # data on a dense grid
     data = create_matrix_funcdata_grid(X, t_grid)
+    visit_counts = rep(nt, n)
   } else {
-    # sparse irregular sampling, sampling_ratio = (Pmin, Pmax)
+    # Sparse irregular sampling. The ratios specify the approximate fraction
+    # of the common nt-point visit grid retained for each subject; every pixel
+    # in an image is observed at each retained visit.
     m_min = ceiling(nt * sampling_ratio[1])
     m_max = max(floor(nt * sampling_ratio[2]), m_min)
     ms = runif(n, min = m_min, max = m_max) |> round()
@@ -210,6 +213,7 @@ gen_data_simple <- function(
       t_grid = t_grid,
       t_idx_list = t_idx_list
     )
+    visit_counts = lengths(t_idx_list)
   }
   
   list(
@@ -220,6 +224,8 @@ gen_data_simple <- function(
     score_dependence = score_dependence,
     dependence_param = dependence_param,
     spatial_model = spatial_model,
+    sampling_ratio = sampling_ratio,
+    visit_counts = visit_counts,
     subject_amplitude = A
   )
   

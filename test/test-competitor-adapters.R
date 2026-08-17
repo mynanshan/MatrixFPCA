@@ -17,7 +17,8 @@ generated <- gen_data_simple(
 fits <- list(
   shi_mdfpca = fit_shi_mdfpca(
     generated$data, ncomp = 2L, nbasis_time = 5L,
-    nbasis_row = 3L, nbasis_col = 3L, maxit = 20L
+    nbasis_row = 3L, nbasis_col = 3L, maxit = 20L,
+    score_ridge = "auto"
   ),
   spaco_minus = fit_spaco_minus(
     generated$data, ncomp = 2L, nbasis = 5L, maxit = 10L
@@ -60,5 +61,19 @@ for (method in names(fits)) {
   metrics <- evaluate_full_eigenfit(fit, generated$cov, eval_ncomp = 2L)
   stopifnot(all(is.finite(metrics[c("rel_hs_cov", "mean_sin2")])))
 }
+stopifnot(
+  is.finite(fits$shi_mdfpca$diagnostics$selected_score_ridge),
+  fits$shi_mdfpca$diagnostics$selected_score_ridge >= 0
+)
+auto_spaco <- fit_spaco_minus(
+  generated$data, ncomp = 2L, nbasis = 5L, maxit = 10L,
+  score_ridge = "auto"
+)
+stopifnot(
+  is.finite(auto_spaco$diagnostics$selected_score_ridge),
+  auto_spaco$diagnostics$selected_score_ridge >= 0,
+  length(auto_spaco$diagnostics$score_ridge_cv_error) == 18L,
+  length(auto_spaco$diagnostics$score_ridge_cv_se) == 18L
+)
 
 cat("competitor adapter smoke tests passed\n")

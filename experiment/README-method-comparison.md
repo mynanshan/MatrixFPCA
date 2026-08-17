@@ -88,7 +88,7 @@ $$
 \min_{\beta_k,\{\alpha_{ik}\}}\sum_i w_i\left\|r_{ik}-\alpha_{ik}X_i\beta_k\right\|_2^2+\rho\,\beta_k^\top P\beta_k,
 $$
 
-subject to $\beta_k^\top G\beta_k=1$ and $\beta_j^\top G\beta_k=0$ for $j<k$, where $G$ is the tensor-basis Gram matrix, $P$ combines second-derivative penalties over time, row, and column, and $w_i$ prevents subjects with more observations from dominating. After fitting, the score covariance is corrected for least-squares measurement-noise inflation and eigendecomposed to rotate the fitted span into uncorrelated FPCs. `shi_mdfpca` is an independent, paper-faithful implementation of this alternating-regression estimator; no runnable author implementation of the longitudinal-image method was located as of 2026-08-06, so it is not presented as author-supplied software.
+subject to $\beta_k^\top G\beta_k=1$ and $\beta_j^\top G\beta_k=0$ for $j<k$, where $G$ is the tensor-basis Gram matrix, $P$ combines second-derivative penalties over time, row, and column, and $w_i$ prevents subjects with more observations from dominating. After fitting, the score covariance is corrected for measurement-noise inflation and eigendecomposed to rotate the fitted span into uncorrelated FPCs. The benchmark's `auto` score option chooses a dimensionless ridge multiplier by leave-one-visit-out prediction error, refits the subject scores with that ridge, and uses the corresponding ridge-sandwich noise correction. The selected multiplier and full CV path are saved in the fit diagnostics. `shi_mdfpca` is an independent, paper-faithful implementation of the alternating-regression estimator with this explicitly documented score-stabilization extension; no runnable author implementation of the longitudinal-image method was located as of 2026-08-06, so it is not presented as author-supplied software.
 
 ### SPACO-minus smooth CP model
 
@@ -104,7 +104,7 @@ $$
 \sum_{(i,t)\in\Omega}\sum_{r=1}^d\left\{Y_i(t,r)-\mu(t,r)-\sum_{k=1}^Ku_{ik}\phi_k(t)v_{rk}\right\}^2+\lambda\sum_{k=1}^K\int\{\phi_k''(t)\}^2\,dt.
 $$
 
-Alternating least squares updates subject scores $u_{ik}$, pixel loadings $v_{rk}$, and B-spline coefficients for the temporal factors. Factors are normalized in the time-integral and pixel-sum inner product. Finally, the covariance of $u_i$ is eigendecomposed and the factors are rotated to produce orthogonal covariance eigenfunctions. The authors' public experiment repository imports a `spaco` module that it does not ship, while the `spaco==1.0` PyPI artifact contains metadata but no importable implementation; `spaco_minus` is therefore explicitly an independent SPACO-style baseline rather than exact author software.
+Alternating least squares updates subject scores $u_{ik}$, pixel loadings $v_{rk}$, and B-spline coefficients for the temporal factors. Factors are normalized in the time-integral and pixel-sum inner product. After this single factor fit, a dimensionless subject-score ridge is selected by leave-one-visit-out prediction error using the fixed fitted temporal and spatial factors and the standard one-standard-error rule. This tuning requires only rank-by-rank linear solves and does not repeat the expensive factor fit. The scores are then refitted using all visits, their covariance is eigendecomposed, and the factors are rotated to produce orthogonal covariance eigenfunctions. A separate $10^{-8}$ diagonal loading is retained only for numerical stability in the alternating solves. The selected ridge, minimum-CV ridge, candidate grid, CV errors, and subject-level standard errors are stored in every SPACO result row. The authors' public experiment repository imports a `spaco` module that it does not ship, while the `spaco==1.0` PyPI artifact contains metadata but no importable implementation; `spaco_minus` is therefore explicitly an independent SPACO-style baseline rather than exact author software.
 
 ### Sparse Product FPCA
 
@@ -138,61 +138,40 @@ Zipunnikov et al.'s [HD-LFPCA](https://www.biostat.jhsph.edu/~vzipunni/vadim_zip
 
 ## Metrics and identifiability
 
-The primary metric is relative squared Hilbert–Schmidt covariance error,
+The primary metric is the relative squared Hilbert--Schmidt error of a common-rank covariance reconstruction,
 
 $$
 E_C=\frac{\|\widehat C-C\|_{HS}^2}{\|C\|_{HS}^2},
 $$
 
-computed for the latent covariance with the measurement-error diagonal excluded. Comparing the full operator makes factor scale and order irrelevant.
+computed for the latent covariance with the measurement-error diagonal excluded. Here $\widehat C=\sum_{k=1}^K\widehat\lambda_k\widehat\psi_k\otimes\widehat\psi_k$, where the same retained rank $K$ is used for every method, including both MatFPCA variants. Thus the comparison concerns the induced covariance operator and is unaffected by component signs, labels, or the nonidentifiable scaling of the three MatFPCA covariance factors.
 
-Explicitly low-rank competitors also receive an oracle truncation benchmark. If $C_K$ is the best rank-$K$ truncation of the true covariance, the table reports $\|C_K-C\|_{HS}^2/\|C\|_{HS}^2$ and the excess error $E_C-\|C_K-C\|_{HS}^2/\|C\|_{HS}^2$. This prevents a rank-eight fit from being penalized solely because the target contains additional nonzero components.
+Rank 9 is the primary setting. To show that conclusions are not an artifact of that single truncation, the main study repeats the otherwise identical $8\times8$ baseline at the evenly spaced ranks $K\in\{6,9,12\}$: `rank6_p8` and `rank12_p8` provide the two sensitivity runs, while `dim_p8` supplies the $K=9$ run. The lower value is 6 rather than a smaller rank because, under the baseline truth, the requested leading-five eigenspace ends inside an eigenvalue-multiplicity block and the identifiable target therefore contains six FPCs. The chosen $K$ is stored as `cov_ncomp` in every result row. This common-rank design also fixes an earlier asymmetry in which competitors were truncated but MatFPCA was scored at full rank.
 
-For leading eigenspaces, let $P$ and $\widehat P$ contain weighted-orthonormal true and estimated FPCs. The reported mean squared sine of the principal angles is
+Every method also receives an oracle truncation benchmark. If $C_K$ is the best rank-$K$ truncation of the true covariance, the table reports $\|C_K-C\|_{HS}^2/\|C\|_{HS}^2$ and the excess error $E_C-\|C_K-C\|_{HS}^2/\|C\|_{HS}^2$. The oracle term is especially important as dimension grows: it separates unavoidable common-rank truncation error from estimation error.
+
+The leading-eigenspace metric is defined using the discretized version of the functional inner product. Let $t_1,\ldots,t_m$ be the common time grid and let $w_1,\ldots,w_m$ be its trapezoidal integration weights. After vectorizing an FPC over time and the $p\times q$ pixels, define
 
 $$
-E_{\mathrm{sub}}=\frac{1}{K}\sum_{k=1}^K\sin^2\theta_k=1-\frac{1}{K}\|P^\top W\widehat P\|_F^2.
+W=I_{pq}\otimes\operatorname{diag}(w_1,\ldots,w_m).
 $$
 
-It is invariant to signs, permutations, and rotations inside tied eigenspaces. If the requested evaluation boundary cuts through a repeated true eigenvalue, the code expands the boundary to include the complete tie block. `rel_eigenvalue_sse` compares the corresponding sorted eigenvalues, and `runtime` measures fitting only.
+If $\Phi_R=[\phi_1,\ldots,\phi_R]$ and $\widehat\Phi_R=[\widehat\phi_1,\ldots,\widehat\phi_R]$ are matrices of the true and estimated leading FPC evaluations, respectively, they are normalized so that
 
-## Temporary local illustration: three seeds
+$$
+\Phi_R^\top W\Phi_R=I_R,\qquad
+\widehat\Phi_R^\top W\widehat\Phi_R=I_R.
+$$
 
-The following small batch was run locally on 2026-08-06 as an implementation check. It is deliberately stored here as a temporary illustration rather than treated as a simulation conclusion: there are only three seeds, one small dimension, and product-structured truth favoring MatFPCA.
+This is the quadrature approximation to the usual orthonormality condition
+$\sum_{a=1}^p\sum_{b=1}^q\int \phi_j(t,a,b)\phi_k(t,a,b)\,dt=\delta_{jk}$; it is what the earlier phrase "weighted-orthonormal" meant. The singular values of $\Phi_R^\top W\widehat\Phi_R$ are the cosines of the principal angles $\theta_1,\ldots,\theta_R$ between the two subspaces. The reported loss is
 
-The setting was $n=50$, $p=q=4$, 51 time-grid points, 10–20% of visits observed per subject, noise standard deviation 0.1, AR(1) spatial factors, temporal rank 5, independent Gaussian scores, competitor covariance rank 8, five evaluated leading components, three local HAPP components per pixel, four method workers, and one BLAS thread. Every one of the 30 method fits completed successfully. Values are means across seeds 1–3; parentheses contain Monte Carlo standard deviations for covariance error.
+$$
+E_{\mathrm{sub}}=\frac{1}{R}\sum_{r=1}^R\sin^2\theta_r
+=1-\frac{1}{R}\|\Phi_R^\top W\widehat\Phi_R\|_F^2.
+$$
 
-| method | relative HS error | excess relative HS error | mean $\sin^2$ angle | runtime (s) | successful seeds |
-|---|---:|---:|---:|---:|---:|
-| MatFPCA refined | 0.0457 (0.0525) | 0.0457 | 0.1718 | 3.100 | 3/3 |
-| MatFPCA identity | 0.0632 (0.0639) | 0.0632 | 0.1743 | 0.612 | 3/3 |
-| sparse Product FPCA | 0.1466 (0.0742) | 0.1189 | 0.1328 | 1.357 | 3/3 |
-| HAPP–FACE | 0.1945 (0.0353) | 0.1667 | 0.1868 | 7.030 | 3/3 |
-| mGSFPCA | 0.2189 (0.0577) | 0.1911 | 0.2104 | 5.028 | 3/3 |
-| HAPP–PACE | 0.2249 (0.0479) | 0.1971 | 0.2185 | 1.638 | 3/3 |
-| mFACEs | 0.2268 (0.0772) | 0.1991 | 0.2478 | 40.075 | 3/3 |
-| SPACO-minus | 0.2423 (0.0859) | 0.2145 | 0.2260 | 4.342 | 3/3 |
-| Shi MD-FPCA | 0.3000 (0.0758) | 0.2723 | 0.3076 | 13.524 | 3/3 |
-| spline PCA | 0.4090 (0.2312) | 0.3812 | 0.3008 | 0.034 | 3/3 |
-
-The exact command pattern was:
-
-```bash
-for seed in 1 2 3; do
-  Rscript experiment/simu-methods.R \
-    -n 50 -p 4 -q 4 -nt 51 -s1 2 -s2 4 -sig 0.1 \
-    --rank_time 5 --eigset 2 --eigvalset 1 --eigensystem ar1 \
-    --scores_distr normal --score_dependence independent \
-    --eval_ncomp 5 --cov_ncomp 8 --happ_npc 3 \
-    --mfaces_max_outcomes 100 --allow_slow_competitors 1 \
-    --shi_ncomp 8 --spaco_rank 8 --ncores 4 --blas_threads 1 \
-    --backend multicore --weight_folds 5 --seed "$seed" \
-    --results_dir experiment/results-methods/local-illustration \
-    --result_tag local_illustration_p4
-done
-```
-
-The ignored local CSV files can be regenerated with that command. The numerical table above is the durable snapshot.
+The scheduled study requests $R=5$, independently of the covariance-reconstruction rank $K$. This loss is invariant to component signs and to a change of orthonormal basis within either leading subspace; in particular, it remains well-defined when individual FPCs associated with a repeated eigenvalue are not identifiable. If the requested boundary $R$ cuts through a repeated true eigenvalue, the code expands $R$ to include the complete multiplicity block. `rel_eigenvalue_sse` compares the corresponding ordered eigenvalues, and `runtime` measures fitting only.
 
 ## General usage
 
@@ -209,11 +188,28 @@ Rscript experiment/simu-methods.R \
 
 Compact CSV files are written to `experiment/results-methods/`. Add `--save_fits 1` only for diagnostic runs because fitted eigenfunction arrays can be large.
 
+### Visit-density convention
+
+`--s_obs_min` and `--s_obs_max` are integer units of 0.05. They define the approximate fraction of the 51-point common visit grid retained independently for each subject, not the fraction of image pixels observed. At each retained visit the complete $p\times q$ image is observed. With the current rounding rule, the two study settings are:
+
+| launcher values | nominal grid fraction | possible visits per subject | interpretation |
+|---|---:|---:|---|
+| `2 4` | 10–20% | 6–10 | primary sparse-longitudinal setting |
+| `4 8` | 20–40% | 11–20 | less-sparse sensitivity |
+
+Thus the baseline is genuinely sparse in longitudinal time, while the 20–40% scenario provides a less-sparse sensitivity check. The realized minimum, mean, and maximum visit counts are stored in every result row.
+
+### Predeclared `v3` competitor settings
+
+The rerun records every tuning choice in its CSV rows. All methods use common covariance rank 9 in the primary scenarios, with the predeclared $K=6$ and $K=12$ baseline sensitivities described above. HAPP retains three local components per pixel; a three-seed baseline sensitivity increased this cap to five but worsened mean relative HS error from 0.423 to 0.667, so the original value is retained rather than making the competitor noisier. Likewise, expanding mGSFPCA from the fixed rank-3/basis-7 fit to a four-combination AIC search slightly worsened relative HS error (0.454 to 0.474) and nearly quadrupled runtime, so the fixed package inputs are retained.
+
+Sparse Product FPCA now permits ten spatial and five temporal marginal components instead of five and three. In the same calibration this reduced mean relative HS error from 0.304 to 0.288, with a modest leading-subspace tradeoff. SPACO-minus selects its subject-score ridge from zero and a generic quarter-decade logarithmic grid from $10^{-4}$ through $1$ by leave-one-visit-out prediction after a single factor fit. The one-standard-error rule chooses the largest candidate within one subject-level standard error of the minimum; no truth-based error enters the selection. With the final 18-candidate grid, a serial timing pair added 0.061 seconds at $8\times8$ (0.7%), while the $16\times16$ pair showed no measurable overhead relative to refitting scores at a supplied value. The tuner operates only on rank-$K$ sufficient statistics and does not repeat ALS. Shi MD-FPCA likewise uses tensor-spline roughness 0.01 and visit-CV score ridge; across five baseline calibration seeds, mean relative HS error fell from 0.541 under the old unregularized fit to 0.304. These calibration seeds are diagnostics for fixing the rerun configuration, not results to include in the final Monte Carlo table.
+
 For a paper-quality study, vary at least sample size, image dimension, visit sparsity, noise, temporal rank, and covariance family. HAPP local truncation and spline basis/penalty settings should be fixed by a predeclared rule or included in a sensitivity analysis. A nonseparable data-generating family is important because the present product truth measures efficiency when MatFPCA is correctly specified rather than robustness to misspecification. Runtime, accuracy, timeouts, and method-level failures must be reported together.
 
 ## Compute Canada runs
 
-`run_simu_methods.sh` creates separate Slurm arrays by computational class and image-size tier. Each task contains one method group, has a method-specific hard timeout, and writes a scheduler-status record. Install packages under the same R module and preview manifests before submitting:
+`run_simu_methods.sh` creates separate Slurm arrays by computational class and image-size tier. Each task contains one method group, uses the same one-hour per-fit cutoff, and writes a scheduler-status record. Install packages under the same R module and preview manifests before submitting:
 
 ```bash
 module load r/4.5.0
@@ -223,27 +219,43 @@ experiment/run_simu_methods.sh 100 1 40 --profile main --no-overwrite
 Rscript experiment/summarize_simu_methods.R
 ```
 
-The profiles are `pilot` for $4\times4$ and $8\times8$ calibration, `scaling` for baseline dimensions $4,8,16,32$, and `main` for dimension, sample-size, visit-density, noise, spectrum, heavy-tail, and score-dependence settings. Eligibility is method-specific:
+The profiles are `pilot` for $8\times8$ calibration, `scaling` for baseline dimensions $8,16,32$, and `main` for dimension, sample-size, visit-density, noise, spectrum, heavy-tail, and score-dependence settings. The obsolete $4\times4$ scenario has been removed. Eligibility is now common except for the structurally quadratic mFACEs estimator:
 
 | method group | largest scheduled square image | additional restriction |
 |---|---:|---|
-| MatFPCA, SPACO-minus, sparse Product FPCA, Shi MD-FPCA | 32 × 32 | all main scenarios |
-| spline PCA, HAPP–PACE, mGSFPCA | 16 × 16 | all eligible scenarios |
-| HAPP–FACE | 8 × 8 | baseline, denser visits, and noise sensitivity |
-| mFACEs | 8 × 8 | baseline dimensions and one denser-visit setting |
+| all methods except mFACEs | 32 × 32 | all main scenarios |
+| mFACEs | 8 × 8 | all p=8 scenarios |
 
-The small-image allocations were calibrated from three successful pilot seeds at both $4\times4$ and $8\times8$. Peak observed memory was 0.39 GB for fast tasks, 0.45 GB for medium tasks, 1.89 GB for HAPP–PACE, 2.53 GB for the combined HAPP–FACE/Shi class, and 1.34 GB for mFACEs. The longest pilot wall time was 4 minutes 12 seconds for 8×8 mFACEs. The resulting defaults retain additional headroom:
+The mFACEs exception is based on its computational target rather than its observed accuracy: it fits 2,080 cross-covariance surfaces at $8\times8$, 32,896 at $16\times16$, and 524,800 at $32\times32$. All other former dimension and scenario allowlists were removed after the first 100-seed run showed that the retained methods were comfortably inside the runtime budget. In particular, every spline-PCA, HAPP–PACE, and mGSFPCA fit completed at $16\times16$.
+
+The small-image allocations were calibrated from successful pilot runs. Peak observed memory was 0.39 GB for fast tasks, 0.45 GB for medium tasks, 1.89 GB for HAPP–PACE, 2.53 GB for the combined HAPP–FACE/Shi class, and 1.34 GB for mFACEs. The small-class Slurm limits now leave 15 minutes of scheduler headroom beyond the common command cutoff:
 
 | Slurm class | image tier | CPUs | memory | Slurm limit | command timeout |
 |---|---:|---:|---:|---:|---:|
-| `fast_small` | at most 8 × 8 | 4 | 2 GB | 15 min | 10 min |
-| `medium_small` | at most 8 × 8 | 4 | 2 GB | 30 min | 20 min |
-| `parallel_small` | at most 8 × 8 | 8 | 4 GB | 30 min | 20 min |
-| `slow_small` | at most 8 × 8 | 8 | 6 GB | 30 min | 20 min |
-| `mfaces` | at most 8 × 8 | 8 | 4 GB | 30 min | 20 min |
+| `fast_small` | at most 8 × 8 | 4 | 2 GB | 75 min | 60 min |
+| `medium_small` | at most 8 × 8 | 4 | 2 GB | 75 min | 60 min |
+| `parallel_small` | at most 8 × 8 | 8 | 4 GB | 75 min | 60 min |
+| `slow_small` | at most 8 × 8 | 8 | 6 GB | 75 min | 60 min |
+| `mfaces` | at most 8 × 8 | 8 | 4 GB | 75 min | 60 min |
 
 The original conservative `fast`, `medium`, `parallel`, and `slow` allocations remain in force for 16×16 and 32×32 jobs because those dimensions have not yet been resource-calibrated. CPU counts also remain unchanged: the available pilot accounting included `AllocCPUS` but not `TotalCPU`, so it does not establish whether fewer cores would preserve runtime. The launcher now prints a post-run `sacct` command containing both `TotalCPU` and `ExitCode` so the next scaling run can calibrate CPU efficiency as well as memory and time.
 
-HAPP jobs use process workers with one BLAS thread each. Shi and mFACEs use one R process with threaded BLAS/OpenMP, avoiding nested oversubscription. Command-level timeouts are shorter than their corresponding Slurm limits. A timeout records `timeout` in its `.status` file and can be retried with `--no-overwrite`, which skips only scheduler tasks marked `ok`. Method-level errors are recorded in result CSV rows and must also be checked; a scheduler task can complete even when its individual method returns an error row.
+HAPP jobs use process workers with one BLAS thread each. Shi and mFACEs use one R process with threaded BLAS/OpenMP, avoiding nested oversubscription. A timeout records `timeout` in its `.status` file and can be retried with `--no-overwrite`, which skips only scheduler tasks marked `ok`. Method-level errors are recorded in result CSV rows and must also be checked; a scheduler task can complete even when its individual method returns an error row. The default `v3` study tag prevents results from the earlier rank-8 configuration from being skipped or overwritten accidentally.
 
-`summarize_simu_methods.R` combines accuracy and runtime results and audits retained manifests/status files into `scheduler-status.csv`. Memory, Slurm time, and command timeouts can be adjusted without editing the launcher through its `MATFPCA_MEM_*`, `MATFPCA_TIME_*`, and `MATFPCA_TIMEOUT_*` environment variables.
+`summarize_simu_methods.R` combines accuracy and runtime results and audits retained manifests/status files into `scheduler-status.csv`. Memory and Slurm time can be adjusted without editing the launcher through its `MATFPCA_MEM_*` and `MATFPCA_TIME_*` environment variables; the common fit cutoff is controlled by `MATFPCA_METHOD_TIMEOUT`.
+
+For the complete paper-style comparison and a strict expected-run audit, use:
+
+```bash
+Rscript experiment/analyze_simu_methods.R
+```
+
+By default this checks the 100-seed `main` design encoded by the launcher and
+writes machine-readable audit files, a complete long-form metric table, a wide
+relative-Hilbert--Schmidt-error table, and Markdown tables under
+`experiment/summary-methods/`. Method-level failures are counted separately
+from missing result files and scheduler failures; failed fits are shown in the
+completion columns but excluded from metric means. Pass `--fail_on_incomplete`
+in automated checks when any missing or failed expected fit should produce a
+nonzero exit status. The `pilot` and `scaling` subsets can instead be selected
+with `--profile pilot` or `--profile scaling`.

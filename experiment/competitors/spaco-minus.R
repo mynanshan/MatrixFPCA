@@ -39,10 +39,109 @@
   )
 }
 
+.spaco_score_fit <- function(design, response, ridge_multiplier = 0,
+                             numerical_ridge = 1e-8) {
+  H <- crossprod(design)
+  scale_H <- mean(diag(H))
+  if (!is.finite(scale_H) || scale_H <= 0) scale_H <- 1
+  numerical_scale <- max(1, max(abs(diag(H))))
+  regularized <- 0.5 * (H + t(H)) +
+    (ridge_multiplier * scale_H + numerical_ridge * numerical_scale) *
+      diag(nrow(H))
+  coefficients <- tryCatch(
+    solve(regularized, crossprod(design, response)),
+    error = function(error) qr.solve(
+      regularized, crossprod(design, response), tol = 1e-9
+    )
+  )
+  list(
+    coefficients = as.numeric(coefficients), gram = H,
+    regularized_gram = regularized,
+    penalty = ridge_multiplier * scale_H
+  )
+}
+
+.spaco_select_score_ridge <- function(X, observed, Phi, V,
+                                      candidates = c(0, 10^seq(-4, 0, by = 0.25)),
+                                      numerical_ridge = 1e-8) {
+  candidates <- sort(unique(as.numeric(candidates)))
+  if (!length(candidates) || any(!is.finite(candidates)) || any(candidates < 0)) {
+    stop("score-ridge candidates must be finite and nonnegative.")
+  }
+
+  # Phi and V have already been estimated by the expensive ALS fit. Tuning
+  # therefore requires only small rank-by-rank score solves. Sufficient
+  # statistics for each grid time avoid repeatedly processing all pixels.
+  time_design <- lapply(seq_len(nrow(Phi)), function(time) {
+    sweep(V, 2L, Phi[time, ], "*")
+  })
+  time_gram <- lapply(time_design, crossprod)
+  prediction_sse <- matrix(0, dim(X)[1L], length(candidates))
+  prediction_n <- matrix(0, dim(X)[1L], length(candidates))
+
+  for (i in seq_len(dim(X)[1L])) {
+    times <- which(observed[i, ])
+    if (length(times) < 2L) next
+    response <- lapply(times, function(time) X[i, time, ])
+    rhs <- Map(crossprod, time_design[times], response)
+    total_gram <- Reduce(`+`, time_gram[times])
+    total_rhs <- Reduce(`+`, rhs)
+    for (held_out in seq_along(times)) {
+      train_gram <- total_gram - time_gram[[times[held_out]]]
+      train_rhs <- total_rhs - rhs[[held_out]]
+      scale_H <- mean(diag(train_gram))
+      if (!is.finite(scale_H) || scale_H <= 0) scale_H <- 1
+      numerical_scale <- max(1, max(abs(diag(train_gram))))
+      for (candidate_index in seq_along(candidates)) {
+        regularized <- 0.5 * (train_gram + t(train_gram)) +
+          (candidates[candidate_index] * scale_H +
+             numerical_ridge * numerical_scale) * diag(nrow(train_gram))
+        score <- tryCatch(
+          solve(regularized, train_rhs),
+          error = function(error) qr.solve(regularized, train_rhs, tol = 1e-9)
+        )
+        residual <- response[[held_out]] -
+          time_design[[times[held_out]]] %*% score
+        prediction_sse[i, candidate_index] <-
+          prediction_sse[i, candidate_index] + sum(residual^2)
+        prediction_n[i, candidate_index] <-
+          prediction_n[i, candidate_index] + length(residual)
+      }
+    }
+  }
+  subject_error <- prediction_sse / prediction_n
+  cv_error <- colMeans(subject_error, na.rm = TRUE)
+  cv_se <- vapply(seq_along(candidates), function(candidate_index) {
+    values <- subject_error[, candidate_index]
+    values <- values[is.finite(values)]
+    if (length(values) < 2L) 0 else stats::sd(values) / sqrt(length(values))
+  }, numeric(1L))
+  valid <- is.finite(cv_error)
+  minimum <- if (any(valid)) which.min(ifelse(valid, cv_error, Inf)) else NA_integer_
+  selected <- if (is.finite(minimum)) {
+    # The conventional one-standard-error rule avoids selecting an unstable,
+    # nearly unregularized score solve for a negligible prediction-error gain.
+    eligible <- valid & cv_error <= cv_error[minimum] + cv_se[minimum]
+    max(which(eligible))
+  } else {
+    which.min(candidates)
+  }
+  list(
+    ridge_multiplier = candidates[selected], candidates = candidates,
+    cv_error = cv_error, cv_se = cv_se, minimum_cv_ridge = if (
+      is.finite(minimum)
+    ) candidates[minimum] else candidates[selected]
+  )
+}
+
 fit_spaco_minus <- function(data, ncomp = 5L, nbasis = 7L,
                             smoothness = 1e-2, center = TRUE,
                             maxit = 100L, tolerance = 1e-5,
-                            ridge = 1e-8, trace = FALSE) {
+                            ridge = 1e-8, score_ridge = "auto",
+                            score_ridge_candidates = c(
+                              0, 10^seq(-4, 0, by = 0.25)
+                            ),
+                            trace = FALSE) {
   tensor <- .spaco_tensor(data)
   X <- tensor$X
   observed <- tensor$observed
@@ -50,6 +149,14 @@ fit_spaco_minus <- function(data, ncomp = 5L, nbasis = 7L,
   nt <- dim(X)[2L]
   npix <- dim(X)[3L]
   rank <- min(max(1L, as.integer(ncomp)), n - 1L, nt, npix)
+  automatic_score_ridge <- is.character(score_ridge) &&
+    length(score_ridge) == 1L && identical(tolower(score_ridge), "auto")
+  if (!automatic_score_ridge) {
+    score_ridge <- as.numeric(score_ridge)[1L]
+    if (!is.finite(score_ridge) || score_ridge < 0) {
+      stop("score_ridge must be 'auto' or a finite nonnegative number.")
+    }
+  }
   nbasis <- min(nt, max(4L, as.integer(nbasis)))
   basis <- fda::create.bspline.basis(
     range(data$t_grid), nbasis = nbasis, norder = min(4L, nbasis)
@@ -174,6 +281,32 @@ fit_spaco_minus <- function(data, ncomp = 5L, nbasis = 7L,
     loss_previous <- loss
   }
 
+  score_ridge_selection <- if (automatic_score_ridge) {
+    .spaco_select_score_ridge(
+      X, observed, Phi, V, candidates = score_ridge_candidates,
+      numerical_ridge = ridge
+    )
+  } else {
+    list(
+      ridge_multiplier = score_ridge, candidates = score_ridge,
+      cv_error = NA_real_, cv_se = NA_real_, minimum_cv_ridge = score_ridge
+    )
+  }
+  selected_score_ridge <- score_ridge_selection$ridge_multiplier
+  score_fits <- lapply(seq_len(n), function(i) {
+    times <- which(observed[i, ])
+    design_i <- do.call(rbind, lapply(times, function(time) {
+      sweep(V, 2L, Phi[time, ], "*")
+    }))
+    response_i <- matrix(
+      X[i, times, , drop = FALSE], nrow = length(times), ncol = npix
+    )
+    .spaco_score_fit(
+      design_i, as.vector(t(response_i)), selected_score_ridge, ridge
+    )
+  })
+  U <- t(vapply(score_fits, `[[`, numeric(rank), "coefficients"))
+
   score_covariance <- stats::cov(U)
   score_ee <- eigen(0.5 * (score_covariance + t(score_covariance)), symmetric = TRUE)
   positive <- score_ee$values > 1e-10 * max(score_ee$values, 0)
@@ -204,7 +337,12 @@ fit_spaco_minus <- function(data, ncomp = 5L, nbasis = 7L,
     diagnostics = list(
       implementation = "independent SPACO-minus style smooth CP",
       converged = converged, iterations = iteration, rank = rank,
-      nbasis = nbasis, smoothness = smoothness,
+      nbasis = nbasis, smoothness = smoothness, numerical_ridge = ridge,
+      selected_score_ridge = selected_score_ridge,
+      minimum_cv_score_ridge = score_ridge_selection$minimum_cv_ridge,
+      score_ridge_candidates = score_ridge_selection$candidates,
+      score_ridge_cv_error = score_ridge_selection$cv_error,
+      score_ridge_cv_se = score_ridge_selection$cv_se,
       subject_scores = U, temporal_factors = Phi, pixel_loadings = V,
       pixel_noise = pixel_noise, mean_surface = mean_surface
     )
