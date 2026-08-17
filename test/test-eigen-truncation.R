@@ -1,4 +1,4 @@
-source("matfdata.R")
+source(file.path("R", "matfdata.R"))
 
 make_test_eigensystem <- function(
   lam_phi = c(100, 0.1),

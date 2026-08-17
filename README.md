@@ -1,8 +1,14 @@
 # MatrixFPCA
 
+## Implementation
+
+Reusable R implementation modules are kept in [`R/`](R/). Source
+[`R/matfpca.R`](R/matfpca.R) from the project root to load the MatFPCA
+implementation and its matrix-functional-data dependency.
+
 ## Method-comparison simulation
 
-[`experiment/simu-methods.R`](experiment/simu-methods.R) benchmarks MatFPCA against HAPP–PACE/FACE, mFACEs, mGSFPCA, Shi et al.'s longitudinal-image MD-FPCA, SPACO-minus, sparse Product FPCA, and a spline-PCA baseline. Package and research-prototype adapters live in [`experiment/competitors/`](experiment/competitors/). The statistical formulation, mathematical descriptions of every competitor, identifiability-safe metrics, preliminary local results, and commands are in [`experiment/README-method-comparison.md`](experiment/README-method-comparison.md). Repeated Compute Canada experiments are submitted through [`experiment/run_simu_methods.sh`](experiment/run_simu_methods.sh).
+[`simulation/simu-methods.R`](simulation/simu-methods.R) benchmarks MatFPCA against HAPP–PACE/FACE, mFACEs, mGSFPCA, Shi et al.'s longitudinal-image MD-FPCA, SPACO-minus, sparse Product FPCA, and a spline-PCA baseline. Package and research-prototype adapters live in [`simulation/competitors/`](simulation/competitors/). The statistical formulation, mathematical descriptions of every competitor, identifiability-safe metrics, preliminary local results, and commands are in [`simulation/README-method-comparison.md`](simulation/README-method-comparison.md). Repeated Compute Canada experiments are submitted through [`simulation/run_simu_methods.sh`](simulation/run_simu_methods.sh).
 
 ## Eigenfunction truncation
 

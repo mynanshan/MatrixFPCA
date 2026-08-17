@@ -1,7 +1,7 @@
 library(foreach)
 library(rTensor)
 
-source("matfdata.R")
+source(file.path("R", "matfdata.R"))
 
 # TODO: add support for mean functions
 

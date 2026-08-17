@@ -21,7 +21,7 @@ Every adapter returns the same latent-covariance eigenfit: `psi[time,row,column,
 Run from the repository root:
 
 ```bash
-Rscript experiment/competitors/install-dependencies.R
+Rscript simulation/competitors/install-dependencies.R
 ```
 
 The locally verified package layer on 2026-08-06 is `fdapace 0.6.0`, `face 0.1-8`, `MFPCA 1.3-11`, `mfaces 0.1-4`, `mGSFPCA 0.2.2`, and `fdarep 0.1.1`. Exact versions used in a fit are retained in adapter diagnostics when the underlying package exposes them.

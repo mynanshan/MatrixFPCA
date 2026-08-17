@@ -1,7 +1,7 @@
 library(rTensor)
 
-source("matfdata.R")
-source(file.path("experiment", "gendata-simple.R"))
+source(file.path("R", "matfdata.R"))
+source(file.path("simulation", "gendata-simple.R"))
 
 check_visit_range <- function(ratio, expected) {
   generated <- gen_data_simple(

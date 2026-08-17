@@ -6,11 +6,11 @@ parser <- argparse::ArgumentParser(
   description = "Summarize simple simulations and generate comparison plots."
 )
 parser$add_argument(
-  "--results_dir", default = file.path("experiment", "results"),
+  "--results_dir", default = file.path("simulation", "results"),
   help = "Directory containing simulation CSV files (default: %(default)s)."
 )
 parser$add_argument(
-  "--output_dir", default = file.path("experiment", "summary"),
+  "--output_dir", default = file.path("simulation", "summary"),
   help = "Directory for summary tables and figures (default: %(default)s)."
 )
 parser$add_argument(

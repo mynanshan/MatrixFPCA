@@ -122,7 +122,7 @@ parser$add_argument("--plot",
   help = "Whether to plot the results"
 )
 parser$add_argument("--results_dir",
-  type = "character", default = file.path("experiment", "results"),
+  type = "character", default = file.path("simulation", "results"),
   help = "Directory for one-file-per-configuration simulation results."
 )
 parser$add_argument("--manual",
@@ -238,10 +238,10 @@ if (is_slurm) {
 }
 RhpcBLASctl::blas_set_num_threads(ncores_all)
 
-source("matfdata.R")
-source("matfpca.R")
-source("plot_utils.R")
-source(file.path("experiment", "gendata-simple.R"))
+source(file.path("R", "matfdata.R"))
+source(file.path("R", "matfpca.R"))
+source(file.path("R", "plot_utils.R"))
+source(file.path("simulation", "gendata-simple.R"))
 
 # Data Generation ---------------------------------------------------------
 

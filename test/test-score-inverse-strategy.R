@@ -1,6 +1,6 @@
 library(rTensor)
 
-source("matfpca.R")
+source(file.path("R", "matfpca.R"))
 
 t_grid <- c(0, 1)
 observed <- as.tensor(array(c(1, 1), dim = c(1, 1, 2)))

@@ -9,7 +9,7 @@ fi
 # Compute Canada / Slurm launcher for the competitor study.
 #
 # Usage:
-#   experiment/run_simu_methods.sh [max_seed] [min_seed] [max_parallel] [options]
+#   simulation/run_simu_methods.sh [max_seed] [min_seed] [max_parallel] [options]
 #
 # Positional arguments (defaulted when the script is run with no arguments):
 #   max_seed       last simulation seed; default: 100
@@ -31,7 +31,7 @@ fi
 #   pilot    small calibration run; its data settings are repeated by main
 #   scaling  dimension-only subset (p=q=8,16,32) already included in main
 #   main     complete final-comparison bundle, including rank sensitivity
-# Thus `experiment/run_simu_methods.sh` alone schedules the main profile, seeds
+# Thus `simulation/run_simu_methods.sh` alone schedules the main profile, seeds
 # 1--100, and every method group. Use pilot/scaling separately only when that
 # narrower calibration or diagnostic run is wanted.
 #
@@ -48,10 +48,10 @@ fi
 # every profile scenario for which each group is eligible.
 #
 # Examples:
-#   experiment/run_simu_methods.sh 100 1 40 --profile main
-#   experiment/run_simu_methods.sh 3 1 20 --profile pilot --dry-run
-#   experiment/run_simu_methods.sh 100 1 40 --profile scaling --no-overwrite
-#   experiment/run_simu_methods.sh 100 1 20 --method-groups proposal,shi,mfaces
+#   simulation/run_simu_methods.sh 100 1 40 --profile main
+#   simulation/run_simu_methods.sh 3 1 20 --profile pilot --dry-run
+#   simulation/run_simu_methods.sh 100 1 40 --profile scaling --no-overwrite
+#   simulation/run_simu_methods.sh 100 1 20 --method-groups proposal,shi,mfaces
 #
 # Profiles:
 #   pilot    baseline p=q=8, intended for resource calibration.
@@ -70,8 +70,8 @@ else
   ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
-SIM_SCRIPT="${ROOT_DIR}/experiment/simu-methods.R"
-RESULTS_DIR="${MATFPCA_METHOD_RESULTS_DIR:-${ROOT_DIR}/experiment/results-methods}"
+SIM_SCRIPT="${ROOT_DIR}/simulation/simu-methods.R"
+RESULTS_DIR="${MATFPCA_METHOD_RESULTS_DIR:-${ROOT_DIR}/simulation/results-methods}"
 LOG_DIR="${MATFPCA_METHOD_LOG_DIR:-${ROOT_DIR}/logs/methods}"
 MANIFEST_DIR="${LOG_DIR}/manifests"
 STATUS_DIR="${RESULTS_DIR}/status"
@@ -558,4 +558,4 @@ done
 
 echo "After completion:"
 echo "  sacct -j $(IFS=,; echo "${submitted_jobs[*]}") --units=M --format=JobID%24,State,ExitCode,Elapsed,TotalCPU,AllocCPUS,ReqMem,MaxRSS"
-echo "  Rscript experiment/summarize_simu_methods.R --results_dir ${RESULTS_DIR}"
+echo "  Rscript simulation/summarize_simu_methods.R --results_dir ${RESULTS_DIR}"

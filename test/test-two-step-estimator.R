@@ -1,5 +1,5 @@
-source("matfpca.R")
-source(file.path("experiment", "gendata-simple.R"))
+source(file.path("R", "matfpca.R"))
+source(file.path("simulation", "gendata-simple.R"))
 
 set.seed(20260625)
 

@@ -7,15 +7,15 @@ if command -v module >/dev/null 2>&1; then
 fi
 
 # Usage:
-#   experiment/run_simu_simple.sh [max_seed] [min_seed] [max_parallel] [options]
-#   experiment/run_simu_simple.sh 100 1 100
-#   experiment/run_simu_simple.sh 200 101 100 --dry-run
-#   experiment/run_simu_simple.sh 100 1 100 --no-overwrite
-#   experiment/run_simu_simple.sh 500 1 100 --retry-incomplete --dry-run
-#   experiment/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
-#   experiment/run_simu_simple.sh 50 1 100 --eigensystem ar1
-#   experiment/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
-#   experiment/run_simu_simple.sh 50 1 100 --nbasis 25
+#   simulation/run_simu_simple.sh [max_seed] [min_seed] [max_parallel] [options]
+#   simulation/run_simu_simple.sh 100 1 100
+#   simulation/run_simu_simple.sh 200 101 100 --dry-run
+#   simulation/run_simu_simple.sh 100 1 100 --no-overwrite
+#   simulation/run_simu_simple.sh 500 1 100 --retry-incomplete --dry-run
+#   simulation/run_simu_simple.sh 50 1 100 --eigensystem smooth-highrank
+#   simulation/run_simu_simple.sh 50 1 100 --eigensystem ar1
+#   simulation/run_simu_simple.sh 50 1 100 --eigensystem both --dry-run
+#   simulation/run_simu_simple.sh 50 1 100 --nbasis 25
 #
 # Defaults produce the configured experiment grid for seeds 1-50, split into
 # resource classes and throttled to at most 100 concurrently running tasks per
@@ -41,8 +41,8 @@ if [[ "${1:-}" == "--worker" ]]; then
 else
   ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
-SIM_SCRIPT="${ROOT_DIR}/experiment/simu-simple.R"
-RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/experiment/results}"
+SIM_SCRIPT="${ROOT_DIR}/simulation/simu-simple.R"
+RESULTS_DIR="${MATFPCA_RESULTS_DIR:-${ROOT_DIR}/simulation/results}"
 LOG_DIR="${ROOT_DIR}/logs"
 MANIFEST_DIR="${LOG_DIR}/manifests"
 R_COMMAND="${R_COMMAND:-Rscript}"

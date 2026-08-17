@@ -1,12 +1,12 @@
 #!/usr/bin/env Rscript
 
 parser <- argparse::ArgumentParser(description = "Summarize method-comparison CSV files.")
-parser$add_argument("--results_dir", default = file.path("experiment", "results-methods"))
+parser$add_argument("--results_dir", default = file.path("simulation", "results-methods"))
 parser$add_argument("--study_version", default = "v3")
-parser$add_argument("--output", default = file.path("experiment", "results-methods", "summary.csv"))
+parser$add_argument("--output", default = file.path("simulation", "results-methods", "summary.csv"))
 parser$add_argument("--manifest_dir", default = file.path("logs", "methods", "manifests"))
 parser$add_argument("--status_output",
-                    default = file.path("experiment", "results-methods", "scheduler-status.csv"))
+                    default = file.path("simulation", "results-methods", "scheduler-status.csv"))
 args <- parser$parse_args()
 if (!requireNamespace("data.table", quietly = TRUE)) stop("Package 'data.table' is required.")
 if (!grepl("^[A-Za-z0-9][A-Za-z0-9_-]*$", args$study_version)) {

@@ -1,4 +1,4 @@
-source(file.path("experiment", "gendata-simple.R"))
+source(file.path("simulation", "gendata-simple.R"))
 
 score_matrix <- function(dependence, dependence_param, seed = 1L) {
   set.seed(seed)

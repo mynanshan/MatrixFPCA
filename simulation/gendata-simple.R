@@ -1,7 +1,7 @@
 library(fda)
 library(rTensor)
 
-source("matfdata.R")
+source(file.path("R", "matfdata.R"))
 
 gen_data_simple <- function(
   n = 10, p = 10, q = 10,

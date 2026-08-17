@@ -4,7 +4,7 @@
   if (!requireNamespace(package, quietly = TRUE)) {
     stop(
       method, " requires package '", package, "'. Run ",
-      "Rscript experiment/competitors/install-dependencies.R --r-only.",
+      "Rscript simulation/competitors/install-dependencies.R --r-only.",
       call. = FALSE
     )
   }

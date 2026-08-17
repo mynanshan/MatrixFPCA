@@ -6,9 +6,9 @@ library(data.table)
 # dev.off()
 pa = par(no.readonly = TRUE)
 
-source("matfdata.R")
-source("matfpca.R")
-source("experiment/gendata-simple.R")
+source(file.path("R", "matfdata.R"))
+source(file.path("R", "matfpca.R"))
+source(file.path("simulation", "gendata-simple.R"))
 
 for (p in c(10, 20, 50, 100, 150, 200)) {
   

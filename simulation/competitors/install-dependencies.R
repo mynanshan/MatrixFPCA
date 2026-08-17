@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 # Install only software dependencies. Competitor source code remains in this
-# directory and result files remain under experiment/results-methods/.
+# directory and result files remain under simulation/results-methods/.
 arguments <- commandArgs(trailingOnly = TRUE)
 repository <- "https://cloud.r-project.org"
 library_path <- Sys.getenv("R_LIBS_USER", unset = NA_character_)

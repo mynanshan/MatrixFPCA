@@ -9,11 +9,11 @@ parser <- argparse::ArgumentParser(
   )
 )
 parser$add_argument(
-  "--results_dir", default = file.path("experiment", "results-methods"),
+  "--results_dir", default = file.path("simulation", "results-methods"),
   help = "Directory containing methods_*.csv and status/ (default: %(default)s)."
 )
 parser$add_argument(
-  "--output_dir", default = file.path("experiment", "summary-methods"),
+  "--output_dir", default = file.path("simulation", "summary-methods"),
   help = "Directory for generated audit and comparison tables (default: %(default)s)."
 )
 parser$add_argument(

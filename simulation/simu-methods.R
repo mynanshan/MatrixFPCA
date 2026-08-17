@@ -90,7 +90,7 @@ parser$add_argument("--backend", choices = c("multisession", "multicore"), defau
 parser$add_argument("--seed", type = "integer", default = 1L)
 parser$add_argument("--save", type = "integer", default = ifelse(interactive(), 0L, 1L))
 parser$add_argument("--save_fits", type = "integer", default = 0L)
-parser$add_argument("--results_dir", default = file.path("experiment", "results-methods"))
+parser$add_argument("--results_dir", default = file.path("simulation", "results-methods"))
 parser$add_argument("--result_tag", default = "",
                     help = "Optional scheduler/job tag appended to the result filename.")
 args <- parser$parse_args()
@@ -103,10 +103,10 @@ if (length(missing_packages)) {
   stop("Missing required package(s): ", paste(missing_packages, collapse = ", "))
 }
 
-source("matfdata.R")
-source("matfpca.R")
-source(file.path("experiment", "gendata-simple.R"))
-source(file.path("experiment", "competitors", "core.R"))
+source(file.path("R", "matfdata.R"))
+source(file.path("R", "matfpca.R"))
+source(file.path("simulation", "gendata-simple.R"))
+source(file.path("simulation", "competitors", "core.R"))
 
 n <- max(2L, args$n_subjects)
 p <- max(1L, args$d_row)

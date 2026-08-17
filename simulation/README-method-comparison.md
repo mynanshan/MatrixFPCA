@@ -1,6 +1,6 @@
 # Method-comparison simulation
 
-`simu-methods.R` compares the proposed product-covariance estimator with methods for sparse multivariate functions, longitudinal image tensors, and structured sparse tensors. It uses the generator from `simu-simple.R`; competitor implementations and package adapters are isolated in `experiment/competitors/`.
+`simu-methods.R` compares the proposed product-covariance estimator with methods for sparse multivariate functions, longitudinal image tensors, and structured sparse tensors. It uses the generator from `simu-simple.R`; competitor implementations and package adapters are isolated in `simulation/competitors/`.
 
 ## Statistical problem and notation
 
@@ -178,7 +178,7 @@ The scheduled study requests $R=5$, independently of the covariance-reconstructi
 A quick adapter smoke run is:
 
 ```bash
-Rscript experiment/simu-methods.R \
+Rscript simulation/simu-methods.R \
   -n 20 -p 3 -q 3 -nt 31 -s1 3 -s2 5 \
   --eval_ncomp 3 --happ_npc 2 --spline_nbasis 5 \
   --mgs_rank_candidates 2 --mgs_basis_candidates 5 \
@@ -186,7 +186,7 @@ Rscript experiment/simu-methods.R \
   --weight_folds 3 --save 0
 ```
 
-Compact CSV files are written to `experiment/results-methods/`. Add `--save_fits 1` only for diagnostic runs because fitted eigenfunction arrays can be large.
+Compact CSV files are written to `simulation/results-methods/`. Add `--save_fits 1` only for diagnostic runs because fitted eigenfunction arrays can be large.
 
 ### Visit-density convention
 
@@ -213,10 +213,10 @@ For a paper-quality study, vary at least sample size, image dimension, visit spa
 
 ```bash
 module load r/4.5.0
-Rscript experiment/competitors/install-dependencies.R
-experiment/run_simu_methods.sh 3 1 20 --profile pilot --dry-run
-experiment/run_simu_methods.sh 100 1 40 --profile main --no-overwrite
-Rscript experiment/summarize_simu_methods.R
+Rscript simulation/competitors/install-dependencies.R
+simulation/run_simu_methods.sh 3 1 20 --profile pilot --dry-run
+simulation/run_simu_methods.sh 100 1 40 --profile main --no-overwrite
+Rscript simulation/summarize_simu_methods.R
 ```
 
 The profiles are `pilot` for $8\times8$ calibration, `scaling` for baseline dimensions $8,16,32$, and `main` for dimension, sample-size, visit-density, noise, spectrum, heavy-tail, and score-dependence settings. The obsolete $4\times4$ scenario has been removed. Eligibility is now common except for the structurally quadratic mFACEs estimator:
@@ -247,13 +247,13 @@ HAPP jobs use process workers with one BLAS thread each. Shi and mFACEs use one 
 For the complete paper-style comparison and a strict expected-run audit, use:
 
 ```bash
-Rscript experiment/analyze_simu_methods.R
+Rscript simulation/analyze_simu_methods.R
 ```
 
 By default this checks the 100-seed `main` design encoded by the launcher and
 writes machine-readable audit files, a complete long-form metric table, a wide
 relative-Hilbert--Schmidt-error table, and Markdown tables under
-`experiment/summary-methods/`. Method-level failures are counted separately
+`simulation/summary-methods/`. Method-level failures are counted separately
 from missing result files and scheduler failures; failed fits are shown in the
 completion columns but excluded from metric means. Pass `--fail_on_incomplete`
 in automated checks when any missing or failed expected fit should produce a

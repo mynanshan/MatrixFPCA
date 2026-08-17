@@ -1,4 +1,4 @@
-source("matfpca.R")
+source(file.path("R", "matfpca.R"))
 
 Nis_large <- rep(8L, 1000)
 nb_small_space <- choose.nbasis(

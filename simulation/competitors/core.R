@@ -501,7 +501,7 @@ evaluate_product_fit <- function(fit, truth, eval_ncomp = 5L,
 
 # Keep package-specific and research-prototype adapters isolated from the
 # common metrics above. Source order matters: common.R uses these utilities.
-.competitor_directory <- file.path("experiment", "competitors")
+.competitor_directory <- file.path("simulation", "competitors")
 for (.competitor_file in c(
   "common.R", "happ-face.R", "mfaces.R", "mgsfpca.R",
   "product-fpca.R", "shi-mdfpca.R", "spaco-minus.R"

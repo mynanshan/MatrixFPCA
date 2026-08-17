@@ -1,9 +1,9 @@
 library(rTensor)
 
-source("matfdata.R")
-source("matfpca.R")
-source(file.path("experiment", "gendata-simple.R"))
-source(file.path("experiment", "competitors", "core.R"))
+source(file.path("R", "matfdata.R"))
+source(file.path("R", "matfpca.R"))
+source(file.path("simulation", "gendata-simple.R"))
+source(file.path("simulation", "competitors", "core.R"))
 
 set.seed(19)
 generated <- gen_data_simple(
