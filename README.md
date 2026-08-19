@@ -10,10 +10,12 @@ implementation and its matrix-functional-data dependency.
 
 [`application/adni/adni_matfpca.R`](application/adni/adni_matfpca.R) applies MatFPCA to
 the longitudinal axial ADNI slices, including training-only temporal mean
-centering, a reproducible stratified image holdout, masked reconstruction
-diagnostics, FPC-score UMAP visualization, and leading-FPC plots. See
+centering, a reproducible random image holdout, masked reconstruction
+diagnostics, PCA/UMAP/t-SNE comparisons, a continuous morphology coordinate
+with MRI decoding and age diagnostics, and leading-FPC plots. See
 [`application/adni/README.md`](application/adni/README.md) for the design choices,
-runtime controls, and generated outputs.
+runtime controls, and generated outputs. The mathematical and computational
+details are in [`application/adni/TECHNICAL_DETAILS.md`](application/adni/TECHNICAL_DETAILS.md).
 
 ## 2D fluid-flow application
 

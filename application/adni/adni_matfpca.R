@@ -8,7 +8,7 @@ suppressPackageStartupMessages({
 if (!nzchar(Sys.getenv("TZ"))) Sys.setenv(TZ = "America/Vancouver")
 
 required_packages <- c(
-  "mgcv", "pracma", "foreach", "splines", "uwot", "FNN", "class", "cluster"
+  "mgcv", "pracma", "foreach", "splines", "uwot", "Rtsne"
 )
 missing_packages <- required_packages[
   !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
@@ -26,6 +26,7 @@ script_path <- if (length(script_argument)) {
 project_root <- normalizePath(file.path(dirname(script_path), "..", ".."))
 setwd(project_root)
 source(file.path("R", "matfpca.R"))
+source(file.path("application", "adni", "adni_continuum_utils.R"))
 
 defaults <- list(
   manifest = "",
@@ -45,12 +46,14 @@ defaults <- list(
   opw_iter = 1L,
   nbasis = "theory",
   mode_pve = 0.95,
-  umap_pcs = 30L,
+  score_pcs = 30L,
+  continuum_df = 5,
+  continuum_max_iterations = 20L,
+  continuum_landmarks = 6L,
   umap_neighbors = 30L,
   umap_min_dist = 0.20,
-  probe_neighbors = 15L,
-  probe_folds = 5L,
-  top_fpcs = 5L,
+  tsne_perplexity = 30,
+  top_fpcs = 4L,
   max_subjects = Inf,
   cache = TRUE
 )
@@ -64,11 +67,14 @@ usage <- function() {
     "  --mask-min-fraction=0.50    Training-image support needed for brain mask\n",
     "  --weight-scheme=SCHEME      gaussian_refined (default) or identity\n",
     "  --weight-folds=3            Cross-fitting folds for refined weights\n",
-    "  --holdout-fraction=0.20     Stratified fraction of subjects tested\n",
+    "  --holdout-fraction=0.20     Random fraction of subjects tested\n",
     "  --time-step-months=VALUE    Visit-time resolution (default: one day)\n",
-    "  --umap-pcs=30               Leading standardized FPC scores used by UMAP\n",
+    "  --score-pcs=30              Leading raw FPC scores used for the continuum\n",
+    "  --continuum-df=5            Principal-curve spline degrees of freedom\n",
+    "  --continuum-landmarks=6     MRI positions shown along the continuum\n",
     "  --umap-neighbors=30         UMAP neighborhood size\n",
-    "  --max-subjects=Inf          Stratified subject cap for smoke tests\n",
+    "  --tsne-perplexity=30        t-SNE perplexity (reduced if needed)\n",
+    "  --max-subjects=Inf          Random subject cap for smoke tests\n",
     "  --cache=true                Reuse image and fitted-model caches\n",
     sep = ""
   )
@@ -122,16 +128,19 @@ if (abs(args$max_month / args$time_step_months -
 if (args$holdout_fraction <= 0 || args$holdout_fraction >= 1) {
   stop("--holdout-fraction must lie in (0, 1).")
 }
-if (args$pool < 1L || args$mean_df < 3L || args$umap_pcs < 2L) {
-  stop("pool >= 1, mean-df >= 3, and umap-pcs >= 2 are required.")
+if (args$pool < 1L || args$mean_df < 3L || args$score_pcs < 2L) {
+  stop("pool >= 1, mean-df >= 3, and score-pcs >= 2 are required.")
 }
+if (args$top_fpcs < 1L) stop("--top-fpcs must be positive.")
 if (args$mask_intensity < 0 || args$mask_min_fraction <= 0 ||
     args$mask_min_fraction >= 1 || args$mask_dilation < 0L) {
   stop("Invalid brain-mask settings.")
 }
-if (args$umap_neighbors < 2L || args$umap_min_dist < 0 ||
-    args$probe_neighbors < 1L || args$probe_folds < 2L) {
-  stop("Invalid UMAP or representation-probe settings.")
+if (args$umap_neighbors < 2L || args$continuum_df < 2 ||
+    args$continuum_max_iterations < 1L ||
+    args$continuum_landmarks < 3L || args$umap_min_dist < 0 ||
+    args$tsne_perplexity < 1) {
+  stop("Invalid continuum or embedding settings.")
 }
 
 if (!nzchar(args$manifest)) {
@@ -146,27 +155,35 @@ args$output_dir <- normalizePath(args$output_dir)
 cache_dir <- file.path(args$output_dir, "cache")
 dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
 
-# These files belong to the superseded mixture-clustering analysis. Remove only
-# the exact generated artifacts so stale results cannot be mistaken for current
-# output.
-legacy_cluster_outputs <- file.path(args$output_dir, c(
+# Remove only exact generated artifacts from superseded label- and
+# cluster-based analyses so stale results cannot be mistaken for current output.
+legacy_outputs <- file.path(args$output_dir, c(
   "fpc_score_clustering.png", "fpc_scores_and_clusters.csv",
-  "clustering_metrics.csv", "clustering_contingency.csv"
+  "clustering_metrics.csv", "clustering_contingency.csv",
+  "fpc_score_umap_by_patient_group.png", "fpc_scores_and_umap.csv",
+  "reconstruction_examples_by_group.png", "umap_representation_diagnostics.csv",
+  "umap_neighbor_diagnostics.csv", "knn_probe_group_recall.csv",
+  "knn_probe_confusion.csv", "top_fpc_spatial_panels.png",
+  "top_fpc_temporal_panels.png", "fpc_scores_clusters_embeddings.csv",
+  "clustering_candidate_metrics.csv", "cluster_summary.csv",
+  "cluster_representative_subjects.csv", "fpc_score_umap_by_cluster.png",
+  "fpc_score_embedding_comparison_by_cluster.png",
+  "representative_mris_by_cluster.png", "age_summary_by_cluster.csv",
+  "age_distribution_by_cluster.png", "age_cluster_association.csv",
+  "age_pairwise_cluster_tests.csv", "fpc_scores_embeddings.csv",
+  "embedding_quality_metrics.csv", "latent_coordinate_diagnostics.csv",
+  "latent_coordinate_landmarks.csv", "latent_principal_curve_scores.csv",
+  "fpc_score_embedding_comparison_by_continuum.png",
+  "fpc_score_umap_by_continuum.png", "reconstructed_mri_continuum.png",
+  "smoothed_observed_mri_continuum.png", "observed_mri_continuum.png",
+  "latent_coordinate_vs_age.png", "adni_matfpca_model.rds",
+  "run_summary.txt", "session_info.txt"
 ))
-invisible(file.remove(legacy_cluster_outputs[file.exists(legacy_cluster_outputs)]))
+invisible(file.remove(legacy_outputs[file.exists(legacy_outputs)]))
 
 log_message <- function(...) {
   cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " | ", ..., "\n", sep = "")
   flush.console()
-}
-
-safe_label <- function(x) {
-  result <- rep(NA_character_, length(x))
-  result[x == "prevalent_ad_at_baseline"] <- "AD at baseline"
-  result[x == "incident_ad_conversion"] <- "MCI-to-AD converter"
-  result[x == "right_censored_non_ad"] <- "MCI non-converter"
-  result[is.na(result)] <- x[is.na(result)]
-  result
 }
 
 pool_image <- function(path, factor) {
@@ -282,37 +299,19 @@ infer_brain_mask <- function(
   list(mask = support, foreground_frequency = foreground_frequency)
 }
 
-stratified_subject_sample <- function(subject_table, size, seed) {
-  if (!is.finite(size) || size >= nrow(subject_table)) return(subject_table$PTID)
-  size <- max(2L, as.integer(size))
+random_subject_sample <- function(subject_ids, size, seed) {
+  if (length(subject_ids) < 8L) stop("At least eight eligible subjects are required.")
+  if (!is.finite(size) || size >= length(subject_ids)) return(subject_ids)
+  size <- min(length(subject_ids), max(8L, as.integer(size)))
   set.seed(seed)
-  allocation <- subject_table[, .N, by = patient_group]
-  allocation[, raw := size * N / sum(N)]
-  allocation[, take := pmin(N, pmax(1L, floor(raw)))]
-  while (sum(allocation$take) < size) {
-    candidates <- which(allocation$take < allocation$N)
-    if (!length(candidates)) break
-    target <- candidates[which.max(allocation$raw[candidates] - allocation$take[candidates])]
-    allocation$take[target] <- allocation$take[target] + 1L
-  }
-  while (sum(allocation$take) > size) {
-    candidates <- which(allocation$take > 1L)
-    if (!length(candidates)) break
-    target <- candidates[which.min(allocation$raw[candidates] - allocation$take[candidates])]
-    allocation$take[target] <- allocation$take[target] - 1L
-  }
-  unlist(lapply(seq_len(nrow(allocation)), function(i) {
-    pool <- subject_table[patient_group == allocation$patient_group[[i]], PTID]
-    sample(pool, allocation$take[[i]])
-  }), use.names = FALSE)
+  sample(subject_ids, size)
 }
 
 prepare_manifest <- function() {
   manifest <- data.table::fread(args$manifest, na.strings = c("", "NA"))
   required <- c(
     "PTID", "image_id", "image_time_month", "mri_VISCODE2",
-    "baseline_dx", "dx_at_or_near_mri", "outcome_type",
-    "image_retained_for_analysis"
+    "image_retained_for_analysis", "baseline_age"
   )
   absent <- setdiff(required, names(manifest))
   if (length(absent)) stop("Manifest is missing: ", paste(absent, collapse = ", "))
@@ -349,19 +348,12 @@ prepare_manifest <- function() {
   retained <- candidates[exclusion == "candidate"]
   if (!nrow(retained)) stop("No eligible images remain after filtering.")
 
-  retained[, patient_group := safe_label(outcome_type)]
-  retained[, patient_group := factor(
-    patient_group,
-    levels = c("AD at baseline", "MCI-to-AD converter", "MCI non-converter")
-  )]
-  if (anyNA(retained$patient_group)) {
-    stop("Unrecognized outcome_type values remain after filtering.")
+  subject_ages <- unique(retained[, .(PTID, baseline_age)])
+  if (anyDuplicated(subject_ages$PTID)) {
+    stop("A subject has inconsistent baseline ages in the manifest.")
   }
-
-  subjects <- unique(retained[, .(PTID, patient_group)])
-  if (anyDuplicated(subjects$PTID)) stop("A subject has inconsistent patient groups.")
-  selected_subjects <- stratified_subject_sample(
-    subjects, args$max_subjects, args$seed + 10L
+  selected_subjects <- random_subject_sample(
+    subject_ages$PTID, args$max_subjects, args$seed + 10L
   )
   retained <- retained[PTID %in% selected_subjects]
 
@@ -434,13 +426,12 @@ if (is.null(cached_images)) {
 image_dim <- cached_images$image_dim
 image_matrix <- cached_images$image_matrix
 
-# Select subjects for one-visit holdout, stratified by clinical outcome group.
-subject_table <- unique(meta[, .(PTID, patient_group)])
+# Select subjects for one-visit holdout without using any clinical outcome label.
+subject_table <- unique(meta[, .(PTID, baseline_age)])
+if (anyDuplicated(subject_table$PTID)) stop("A subject has inconsistent baseline ages.")
 set.seed(args$seed)
-holdout_subjects <- unlist(lapply(split(subject_table, subject_table$patient_group), function(x) {
-  number <- max(1L, as.integer(round(args$holdout_fraction * nrow(x))))
-  sample(x$PTID, min(number, nrow(x)))
-}), use.names = FALSE)
+holdout_count <- max(1L, as.integer(round(args$holdout_fraction * nrow(subject_table))))
+holdout_subjects <- sample(subject_table$PTID, min(holdout_count, nrow(subject_table)))
 meta[, split := "train"]
 set.seed(args$seed + 1L)
 test_rows <- meta[PTID %in% holdout_subjects, sample(.I, 1L), by = PTID]$V1
@@ -640,6 +631,83 @@ eig <- analysis_fit$eig
 scores <- analysis_fit$scores
 ranks <- analysis_fit$ranks
 
+# The retained eigensystem can contain only one temporal mode when that mode
+# clears the marginal PVE threshold. Recover the full spatial eigensystem for
+# product-rank diagnostics. The temporal diagnostic below uses quadrature
+# weights because the compact ADNI grid is irregular rather than equally spaced.
+eig_full <- eigen.matfcov(covariance_fit$C)
+
+trapezoid_weights <- function(grid) {
+  if (length(grid) < 3L || is.unsorted(grid, strictly = TRUE)) {
+    stop("Temporal diagnostics require a strictly increasing grid.")
+  }
+  c(
+    (grid[[2L]] - grid[[1L]]) / 2,
+    (grid[3:length(grid)] - grid[1:(length(grid) - 2L)]) / 2,
+    (grid[[length(grid)]] - grid[[length(grid) - 1L]]) / 2
+  )
+}
+
+temporal_weights <- trapezoid_weights(t_grid)
+temporal_sqrt_weights <- sqrt(temporal_weights)
+temporal_weighted_covariance <- sweep(
+  sweep(covariance_fit$C$K, 1L, temporal_sqrt_weights, "*"),
+  2L, temporal_sqrt_weights, "*"
+)
+temporal_integral_eigen <- eigen(
+  0.5 * (temporal_weighted_covariance + t(temporal_weighted_covariance)),
+  symmetric = TRUE
+)
+temporal_values <- pmax(as.numeric(temporal_integral_eigen$values), 0)
+temporal_functions <- sweep(
+  temporal_integral_eigen$vectors, 1L, temporal_sqrt_weights, "/"
+)
+temporal_positive_total <- sum(temporal_values)
+temporal_relative_tolerance <- 1e-10
+temporal_mode_count <- max(
+  2L,
+  sum(temporal_values >= max(temporal_values) * temporal_relative_tolerance)
+)
+temporal_mode_count <- min(temporal_mode_count, ncol(temporal_functions))
+temporal_baseline_index <- which.min(abs(t_grid))
+
+temporal_diagnostics <- rbindlist(lapply(seq_len(temporal_mode_count), function(k) {
+  profile <- temporal_functions[, k]
+  weighted_mean <- sum(temporal_weights * profile) / sum(temporal_weights)
+  total_energy <- sum(temporal_weights * profile^2)
+  nonconstant_energy <- sum(temporal_weights * (profile - weighted_mean)^2)
+  rms <- sqrt(total_energy / sum(temporal_weights))
+  data.table(
+    time_component = k,
+    eigenvalue = temporal_values[[k]],
+    marginal_variance_fraction = temporal_values[[k]] / temporal_positive_total,
+    cumulative_marginal_variance_fraction =
+      sum(temporal_values[seq_len(k)]) / temporal_positive_total,
+    nonconstant_fraction = nonconstant_energy / total_energy,
+    range_over_rms = diff(range(profile)) / rms,
+    baseline_to_end_change_over_rms =
+      abs(profile[[length(profile)]] - profile[[temporal_baseline_index]]) / rms
+  )
+}))
+
+# This screen separates a visibly dynamic, variance-bearing component from
+# high-frequency numerical modes: at least 0.1% marginal PVE and at least half
+# of the eigenfunction energy outside its best constant approximation.
+temporal_diagnostics[, `:=`(
+  variance_bearing = marginal_variance_fraction >= 0.001,
+  highly_nonconstant = nonconstant_fraction >= 0.50
+)]
+temporal_diagnostics[, dynamic_screen := variance_bearing & highly_nonconstant]
+temporal_diagnostics[, interpretation := fifelse(
+  dynamic_screen,
+  "material non-constant temporal mode",
+  fifelse(
+    variance_bearing,
+    "material but nearly constant temporal mode",
+    "non-constant shape with negligible variance"
+  )
+)]
+
 predict_mean_matrix <- function(time_year) {
   vector <- as.numeric(mean_design(mean_model, time_year) %*% mean_model$coefficients)
   matrix(vector, nrow = image_dim[[1L]])
@@ -695,7 +763,6 @@ for (subject_position in seq_along(subject_ids)) {
       analysis_row = row,
       PTID = subject,
       image_id = meta$image_id[[row]],
-      patient_group = as.character(meta$patient_group[[row]]),
       split = meta$split[[row]],
       time_year = meta$time_year[[row]],
       mask_pixels = sum(brain_mask),
@@ -718,7 +785,7 @@ reconstruction_summary <- reconstruction_metrics[, .(
   relative_rmse_median = median(relative_rmse, na.rm = TRUE),
   correlation_mean = mean(correlation, na.rm = TRUE),
   psnr_mean = mean(psnr)
-), by = .(split, patient_group)]
+), by = split]
 
 # Order product FPCs by their product eigenvalue and expose their score columns.
 product_values_array <- eig$values$lam_phi %o%
@@ -732,6 +799,30 @@ product_index <- product_index[is.finite(eigenvalue) & eigenvalue > 0][order(-ei
 product_index[, product_pc := .I]
 product_index[, pve := cumsum(eigenvalue) / sum(eigenvalue)]
 
+# Locate the leading product FPC associated with each diagnosed time mode. This
+# makes clear why a dynamic marginal mode may not appear among the leading
+# product components even when its temporal shape is pronounced.
+diagnostic_product_values <-
+  pmax(eig_full$values$lam_phi, 0) %o%
+  pmax(eig_full$values$lam_psi, 0) %o%
+  temporal_values[seq_len(temporal_mode_count)]
+diagnostic_product_order <- order(
+  as.vector(diagnostic_product_values), decreasing = TRUE
+)
+diagnostic_product_indices <- arrayInd(
+  diagnostic_product_order, dim(diagnostic_product_values)
+)
+temporal_diagnostics[, leading_full_product_rank := vapply(
+  time_component,
+  function(k) which(diagnostic_product_indices[, 3L] == k)[[1L]],
+  integer(1L)
+)]
+temporal_diagnostics[, leading_product_eigenvalue := vapply(
+  time_component,
+  function(k) max(diagnostic_product_values[, , k]),
+  numeric(1L)
+)]
+
 score_matrix_all <- matrix(scores@data, nrow = length(subject_ids))
 score_columns <- with(product_index, {
   row_component +
@@ -742,162 +833,205 @@ score_matrix_ordered <- score_matrix_all[, score_columns, drop = FALSE]
 colnames(score_matrix_ordered) <- sprintf("FPC%03d", seq_len(ncol(score_matrix_ordered)))
 score_table <- data.table(
   PTID = subject_ids,
-  patient_group = as.character(subject_table$patient_group[match(subject_ids, subject_table$PTID)])
+  baseline_age = subject_table$baseline_age[match(subject_ids, subject_table$PTID)]
 )
 score_table <- cbind(score_table, as.data.table(score_matrix_ordered))
 
-n_umap_pcs <- min(args$umap_pcs, ncol(score_matrix_ordered), nrow(score_matrix_ordered) - 2L)
-umap_input <- scale(score_matrix_ordered[, seq_len(n_umap_pcs), drop = FALSE])
+n_score_pcs <- min(
+  args$score_pcs, ncol(score_matrix_ordered), nrow(score_matrix_ordered) - 2L
+)
+score_input <- score_matrix_ordered[, seq_len(n_score_pcs), drop = FALSE]
 valid_dimensions <- apply(
-  umap_input, 2L,
+  score_input, 2L,
   function(x) all(is.finite(x)) && stats::sd(x) > 1e-10
 )
-umap_input <- umap_input[, valid_dimensions, drop = FALSE]
-if (ncol(umap_input) < 2L) stop("Too few non-degenerate FPC score dimensions.")
+score_input_positions <- which(valid_dimensions)
+score_input <- score_input[, valid_dimensions, drop = FALSE]
+if (ncol(score_input) < 2L) stop("Too few non-degenerate FPC score dimensions.")
+score_dimension <- ncol(score_input)
+score_dimension_suffix <- sprintf("_pcs%d", score_dimension)
+continuum_output_file <- function(stem, extension) {
+  file.path(
+    args$output_dir,
+    paste0(stem, score_dimension_suffix, ".", extension)
+  )
+}
 
-umap_neighbors <- min(args$umap_neighbors, nrow(umap_input) - 1L)
 log_message(
-  "Embedding ", ncol(umap_input), " standardized FPC scores with UMAP (",
-  umap_neighbors, " neighbors, min_dist = ", args$umap_min_dist, ")..."
+  "Fitting a one-dimensional principal curve through the raw FPC scores..."
 )
-set.seed(args$seed + 3L)
-umap_embedding <- uwot::umap(
-  umap_input,
-  n_neighbors = umap_neighbors,
-  n_components = 2L,
-  metric = "euclidean",
+continuum_fit <- fit_score_principal_curve(
+  score_input,
+  spline_df = args$continuum_df,
+  max_iterations = args$continuum_max_iterations
+)
+# A one-dimensional curve has no intrinsic direction. Age is used only to name
+# the increasing end; reversing an axis changes neither its fit nor ordering.
+continuum_fit <- orient_principal_curve(continuum_fit, score_table$baseline_age)
+linear_latent_coordinate <- continuum_fit$linear_coordinate
+linear_latent_coordinate <- (
+  linear_latent_coordinate - min(linear_latent_coordinate)
+) / diff(range(linear_latent_coordinate))
+score_table[, `:=`(
+  latent_coordinate = continuum_fit$coordinate,
+  linear_latent_coordinate = linear_latent_coordinate,
+  latent_curve_residual = continuum_fit$residual_distance
+)]
+continuum_diagnostics <- data.table(
+  method = "fixed-complexity principal curve in raw FPC-score space",
+  requested_input_fpcs = args$score_pcs,
+  input_fpcs = score_dimension,
+  input_retained_product_variance_fraction = product_index$pve[[n_score_pcs]],
+  spline_df = continuum_fit$spline_df,
+  iterations = continuum_fit$iterations,
+  principal_curve_variance_explained = continuum_fit$variance_explained,
+  linear_axis_variance_explained = continuum_fit$linear_variance_explained,
+  nonlinear_improvement = continuum_fit$variance_explained -
+    continuum_fit$linear_variance_explained,
+  curve_vs_linear_spearman = cor(
+    continuum_fit$coordinate, linear_latent_coordinate,
+    method = "spearman"
+  ),
+  coordinate_vs_age_spearman = cor(
+    continuum_fit$coordinate, score_table$baseline_age,
+    method = "spearman", use = "complete.obs"
+  ),
+  coordinate_vs_age_pearson = cor(
+    continuum_fit$coordinate, score_table$baseline_age,
+    method = "pearson", use = "complete.obs"
+  ),
+  orientation_rule = "direction only chosen for nonnegative age rank correlation"
+)
+
+log_message("Comparing PCA, UMAP, and t-SNE embeddings...")
+embedding_fit <- compare_score_embeddings(
+  score_input,
+  neighbors = args$umap_neighbors,
   min_dist = args$umap_min_dist,
-  init = "spectral",
-  n_threads = 1L,
-  n_sgd_threads = 1L,
-  fast_sgd = FALSE,
-  ret_model = FALSE,
-  verbose = FALSE,
+  tsne_perplexity = args$tsne_perplexity,
   seed = args$seed + 3L
 )
-colnames(umap_embedding) <- c("UMAP1", "UMAP2")
-score_table[, `:=`(UMAP1 = umap_embedding[, 1L], UMAP2 = umap_embedding[, 2L])]
-true_groups <- score_table$patient_group
+score_table[, `:=`(
+  PCA1 = embedding_fit$embeddings$PCA[, 1L],
+  PCA2 = embedding_fit$embeddings$PCA[, 2L],
+  UMAP1 = embedding_fit$embeddings$UMAP[, 1L],
+  UMAP2 = embedding_fit$embeddings$UMAP[, 2L],
+  TSNE1 = embedding_fit$embeddings$`t-SNE`[, 1L],
+  TSNE2 = embedding_fit$embeddings$`t-SNE`[, 2L]
+)]
 
-label_silhouette <- function(representation, labels) {
-  group_id <- as.integer(factor(labels))
-  mean(cluster::silhouette(group_id, stats::dist(representation))[, "sil_width"])
-}
-
-neighbor_label_diagnostics <- function(representation, labels, k, space) {
-  k <- min(k, nrow(representation) - 1L)
-  neighbors <- FNN::get.knn(representation, k = k)$nn.index
-  neighbor_labels <- matrix(labels[neighbors], nrow = nrow(representation))
-  same_group_fraction <- rowMeans(neighbor_labels == labels)
-  group_sizes <- table(labels)
-  result <- data.table(
-    patient_group = labels,
-    same_group_neighbor_fraction = same_group_fraction
-  )[, .(
-    subjects = .N,
-    same_group_neighbor_fraction = mean(same_group_neighbor_fraction)
-  ), by = patient_group]
-  result[, chance_fraction :=
-    (as.numeric(group_sizes[patient_group]) - 1) / (length(labels) - 1)]
-  result[, enrichment_over_chance := same_group_neighbor_fraction / chance_fraction]
-  result[, `:=`(space = space, neighbors = k)]
-  setcolorder(result, c(
-    "space", "neighbors", "patient_group", "subjects",
-    "same_group_neighbor_fraction", "chance_fraction", "enrichment_over_chance"
-  ))
-  result
-}
-
-cross_validated_knn_probe <- function(
-  representation, labels, folds, neighbors, seed
-) {
-  label_levels <- unique(labels)
-  fold_id <- integer(length(labels))
-  set.seed(seed)
-  for (label in label_levels) {
-    indices <- which(labels == label)
-    fold_id[indices] <- sample(rep(seq_len(folds), length.out = length(indices)))
-  }
-  predictions <- rep(NA_character_, length(labels))
-  for (fold in seq_len(folds)) {
-    test <- which(fold_id == fold)
-    train <- which(fold_id != fold)
-    k <- min(neighbors, length(train))
-    predictions[test] <- as.character(class::knn(
-      train = representation[train, , drop = FALSE],
-      test = representation[test, , drop = FALSE],
-      cl = factor(labels[train], levels = label_levels),
-      k = k
-    ))
-  }
-  confusion <- table(
-    truth = factor(labels, levels = label_levels),
-    prediction = factor(predictions, levels = label_levels)
+latent_landmark_percentiles <- seq(
+  0.05, 0.95, length.out = args$continuum_landmarks
+)
+latent_landmark_positions <- as.numeric(stats::quantile(
+  continuum_fit$coordinate,
+  probs = latent_landmark_percentiles,
+  names = FALSE
+))
+latent_landmark_scores <- interpolate_curve_scores(
+  continuum_fit, latent_landmark_positions
+)
+baseline_time_index <- which.min(abs(t_grid))
+reconstruct_latent_scores <- function(ordered_scores) {
+  complete_scores <- numeric(ncol(score_matrix_all))
+  complete_scores[score_columns[score_input_positions]] <- ordered_scores
+  score_array <- array(
+    complete_scores,
+    dim = c(ranks[["row"]], ranks[["column"]], ranks[["time"]])
   )
-  recall <- diag(confusion) / rowSums(confusion)
-  list(
-    accuracy = mean(predictions == labels),
-    balanced_accuracy = mean(recall),
-    recall = data.table(
-      patient_group = label_levels,
-      subjects = as.integer(rowSums(confusion)),
-      recall = as.numeric(recall)
+  centered <- rTensor::ttl(
+    rTensor::as.tensor(score_array),
+    list(
+      eig$funcs$Phi,
+      eig$funcs$Psi,
+      eig$funcs$Theta[baseline_time_index, , drop = FALSE]
     ),
-    confusion = as.data.table(confusion)
-  )
+    ms = 1:3
+  )@data
+  dim(centered) <- image_dim
+  (centered + predict_mean_matrix(t_grid[[baseline_time_index]])) * brain_mask
 }
+latent_reconstructed_images <- lapply(
+  seq_along(latent_landmark_positions),
+  function(index) reconstruct_latent_scores(latent_landmark_scores[index, ])
+)
 
-probe_folds <- min(
-  args$probe_folds,
-  max(2L, min(as.integer(table(true_groups))))
-)
-probe <- cross_validated_knn_probe(
-  umap_input,
-  true_groups,
-  folds = probe_folds,
-  neighbors = args$probe_neighbors,
-  seed = args$seed + 4L
-)
-mci_indices <- which(true_groups != "AD at baseline")
-mci_probe <- cross_validated_knn_probe(
-  umap_input[mci_indices, , drop = FALSE],
-  true_groups[mci_indices],
-  folds = min(args$probe_folds, min(table(true_groups[mci_indices]))),
-  neighbors = args$probe_neighbors,
-  seed = args$seed + 5L
-)
-probe_recall <- rbindlist(list(
-  cbind(task = "three_group", probe$recall),
-  cbind(task = "MCI_conversion_binary", mci_probe$recall)
-))
-probe_confusion <- rbindlist(list(
-  cbind(task = "three_group", probe$confusion),
-  cbind(task = "MCI_conversion_binary", mci_probe$confusion)
-))
-representation_metrics <- data.table(
-  method = "Unsupervised UMAP of standardized product-FPC scores",
-  fpc_dimensions = ncol(umap_input),
-  umap_neighbors = umap_neighbors,
-  umap_min_dist = args$umap_min_dist,
-  known_group_silhouette_fpc = label_silhouette(umap_input, true_groups),
-  known_group_silhouette_umap = label_silhouette(umap_embedding, true_groups),
-  knn_probe_neighbors = args$probe_neighbors,
-  knn_probe_folds = probe_folds,
-  knn_probe_accuracy = probe$accuracy,
-  knn_probe_balanced_accuracy = probe$balanced_accuracy,
-  mci_binary_knn_probe_accuracy = mci_probe$accuracy,
-  mci_binary_knn_probe_balanced_accuracy = mci_probe$balanced_accuracy,
-  majority_class_accuracy = max(table(true_groups)) / length(true_groups),
-  balanced_chance_accuracy = 1 / length(unique(true_groups))
-)
-neighbor_diagnostics <- rbindlist(list(
-  neighbor_label_diagnostics(
-    umap_input, true_groups, args$probe_neighbors, "standardized_FPC"
-  ),
-  neighbor_label_diagnostics(
-    umap_embedding, true_groups, args$probe_neighbors, "UMAP_2D"
+chosen_subject_rows <- integer()
+observed_landmark_rows <- vapply(latent_landmark_positions, function(target) {
+  candidates <- setdiff(seq_len(nrow(score_table)), chosen_subject_rows)
+  ordering <- order(
+    abs(score_table$latent_coordinate[candidates] - target),
+    score_table$latent_curve_residual[candidates],
+    score_table$PTID[candidates]
   )
-))
+  selected <- candidates[[ordering[[1L]]]]
+  chosen_subject_rows <<- c(chosen_subject_rows, selected)
+  selected
+}, integer(1L))
+latent_landmarks <- data.table(
+  target_percentile = latent_landmark_percentiles,
+  target_coordinate = latent_landmark_positions,
+  PTID = score_table$PTID[observed_landmark_rows],
+  subject_coordinate = score_table$latent_coordinate[observed_landmark_rows],
+  baseline_age = score_table$baseline_age[observed_landmark_rows],
+  curve_residual = score_table$latent_curve_residual[observed_landmark_rows]
+)
+latent_landmarks[, analysis_row := vapply(PTID, function(subject) {
+  candidates <- meta[PTID == subject]
+  candidates$analysis_row[[which.min(abs(candidates$time_year))]]
+}, integer(1L))]
+latent_landmarks[, `:=`(
+  image_id = meta$image_id[analysis_row],
+  image_time_year = meta$time_year[analysis_row],
+  image_file = basename(meta$image_file[analysis_row]),
+  source_image_path = meta$image_file[analysis_row]
+)]
+
+baseline_subject_image_rows <- vapply(subject_ids, function(subject) {
+  candidates <- meta[PTID == subject]
+  candidates$analysis_row[[which.min(abs(candidates$time_year))]]
+}, integer(1L))
+continuum_smoother_neighbors <- min(
+  nrow(score_table), max(20L, as.integer(round(0.15 * nrow(score_table))))
+)
+continuum_kernel_bandwidth <- vapply(
+  latent_landmark_positions,
+  function(position) {
+    sorted_distance <- sort(abs(score_table$latent_coordinate - position))
+    max(sorted_distance[[continuum_smoother_neighbors]], 0.03)
+  },
+  numeric(1L)
+)
+continuum_effective_subjects <- numeric(length(latent_landmark_positions))
+smoothed_observed_images <- lapply(seq_along(latent_landmark_positions), function(index) {
+  distance <- score_table$latent_coordinate - latent_landmark_positions[[index]]
+  weights <- exp(-0.5 * (distance / continuum_kernel_bandwidth[[index]])^2)
+  weights <- weights / sum(weights)
+  continuum_effective_subjects[[index]] <<- 1 / sum(weights^2)
+  averaged <- as.numeric(crossprod(
+    weights,
+    image_matrix[baseline_subject_image_rows, , drop = FALSE]
+  ))
+  matrix(averaged, nrow = image_dim[[1L]]) * brain_mask
+})
+latent_landmarks[, `:=`(
+  smoothing_neighbors = continuum_smoother_neighbors,
+  kernel_bandwidth = continuum_kernel_bandwidth,
+  kernel_effective_subjects = continuum_effective_subjects
+)]
+
+latent_curve_table <- data.table(
+  latent_coordinate = continuum_fit$curve_coordinate
+)
+latent_curve_table <- cbind(
+  latent_curve_table,
+  as.data.table(continuum_fit$curve_scores)
+)
+setnames(
+  latent_curve_table,
+  old = names(latent_curve_table)[-1L],
+  new = colnames(score_input)
+)
 
 write_image_panel <- function(z, palette, zlim = range(z, finite = TRUE), main = "") {
   if (!all(is.finite(zlim)) || diff(zlim) == 0) zlim <- zlim + c(-1, 1) * 1e-8
@@ -910,7 +1044,7 @@ write_image_panel <- function(z, palette, zlim = range(z, finite = TRUE), main =
 }
 
 gray_palette <- gray.colors(256L, start = 0, end = 1)
-diverging_palette <- colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(255L)
+diverging_palette <- colorRampPalette(c("#2166AC", "#FFFFFF", "#B2182B"))(255L)
 
 png(
   file.path(args$output_dir, "inferred_brain_mask.png"),
@@ -923,159 +1057,327 @@ write_image_panel(
 )
 dev.off()
 
-top_count <- min(args$top_fpcs, nrow(product_index))
-png(
-  file.path(args$output_dir, "top_fpc_spatial_panels.png"),
-  width = 360L * top_count, height = 390L, res = 120L
-)
-par(mfrow = c(1L, top_count), mar = c(1.5, 1.5, 3.5, 1))
-for (component in seq_len(top_count)) {
-  index <- product_index[component]
-  theta <- eig$funcs$Theta[, index$time_component]
-  time_position <- which.max(abs(theta))
-  effect <- sqrt(index$eigenvalue) *
-    outer(
-      eig$funcs$Phi[, index$row_component],
-      eig$funcs$Psi[, index$column_component]
-    ) * theta[[time_position]]
-  effect[!brain_mask] <- 0
-  limit <- max(abs(effect))
-  write_image_panel(
-    effect, diverging_palette, c(-limit, limit),
-    sprintf("FPC %d\npeak |effect| at t = %.2f y", component, t_grid[[time_position]])
+# Publication panel: the two variance-bearing temporal modes form the rows,
+# while the four leading marginal spatial product eigenfunctions form the
+# columns. No eigenvalue or temporal loading is folded into either function.
+spatial_values <- pmax(eig_full$values$lam_phi, 0) %o%
+  pmax(eig_full$values$lam_psi, 0)
+spatial_order <- order(as.vector(spatial_values), decreasing = TRUE)
+spatial_indices <- arrayInd(spatial_order, dim(spatial_values))
+spatial_panel_count <- min(4L, args$top_fpcs, nrow(spatial_indices))
+spatial_panel_indices <- spatial_indices[seq_len(spatial_panel_count), , drop = FALSE]
+spatial_panel_fve <- as.vector(spatial_values)[
+  spatial_order[seq_len(spatial_panel_count)]
+] / sum(spatial_values)
+spatial_panel_functions <- lapply(seq_len(spatial_panel_count), function(k) {
+  outer(
+    eig_full$funcs$Phi[, spatial_panel_indices[k, 1L]],
+    eig_full$funcs$Psi[, spatial_panel_indices[k, 2L]]
   )
+})
+spatial_panel_limit <- max(abs(unlist(lapply(
+  spatial_panel_functions, function(z) z[brain_mask]
+))))
+
+orient_temporal_for_display <- function(profile, mode) {
+  weighted_mean <- sum(temporal_weights * profile) / sum(temporal_weights)
+  if (mode == 1L && weighted_mean < 0) return(-profile)
+  if (mode > 1L &&
+      profile[[length(profile)]] < profile[[temporal_baseline_index]]) {
+    return(-profile)
+  }
+  profile
+}
+
+publication_temporal_modes <- seq_len(min(2L, ncol(temporal_functions)))
+publication_temporal_functions <- lapply(
+  publication_temporal_modes,
+  function(k) orient_temporal_for_display(temporal_functions[, k], k)
+)
+temporal_panel_ylim <- range(unlist(publication_temporal_functions))
+temporal_panel_padding <- 0.04 * diff(temporal_panel_ylim)
+temporal_panel_ylim <- temporal_panel_ylim + c(-1, 1) * temporal_panel_padding
+
+write_masked_spatial_panel <- function(z, main) {
+  displayed <- z
+  displayed[!brain_mask] <- NA_real_
+  image(
+    seq_len(ncol(displayed)), seq_len(nrow(displayed)),
+    t(displayed[nrow(displayed):1L, , drop = FALSE]),
+    col = diverging_palette,
+    zlim = c(-spatial_panel_limit, spatial_panel_limit),
+    axes = FALSE, useRaster = TRUE, xlab = "", ylab = "", main = main
+  )
+  contour(
+    seq_len(ncol(brain_mask)), seq_len(nrow(brain_mask)),
+    t(brain_mask[nrow(brain_mask):1L, , drop = FALSE] * 1),
+    levels = 0.5, add = TRUE, drawlabels = FALSE,
+    col = "black", lwd = 1.1, lty = 1
+  )
+  box(col = "black", lwd = 0.8)
+}
+
+png(
+  file.path(args$output_dir, "top_fpc_spatiotemporal_panels.png"),
+  width = 2100L, height = 820L, res = 160L, bg = "white"
+)
+layout(matrix(
+  seq_len(length(publication_temporal_modes) * (spatial_panel_count + 1L)),
+  nrow = length(publication_temporal_modes), byrow = TRUE
+))
+par(
+  mar = c(3.1, 3.2, 2.7, 0.8), mgp = c(1.8, 0.55, 0),
+  tcl = -0.25, cex.axis = 0.72, cex.lab = 0.78, cex.main = 0.84,
+  font.main = 1
+)
+for (row in seq_along(publication_temporal_modes)) {
+  time_mode <- publication_temporal_modes[[row]]
+  plot(
+    t_grid, publication_temporal_functions[[row]],
+    type = "l", lwd = 2.2, col = "black",
+    xlim = range(t_grid), ylim = temporal_panel_ylim,
+    xlab = "Years from baseline", ylab = "Eigenfunction",
+    main = sprintf(
+      "Temporal FPC %d (%.2f%%)",
+      time_mode,
+      100 * temporal_diagnostics[
+        time_component == time_mode, marginal_variance_fraction
+      ]
+    )
+  )
+  abline(h = 0, col = "grey75", lty = 3, lwd = 0.8)
+  box(col = "black", lwd = 0.8)
+  for (spatial_mode in seq_len(spatial_panel_count)) {
+    write_masked_spatial_panel(
+      spatial_panel_functions[[spatial_mode]],
+      sprintf(
+        "Spatial FPC %d (%.2f%%)",
+        spatial_mode, 100 * spatial_panel_fve[[spatial_mode]]
+      )
+    )
+  }
 }
 dev.off()
 
+temporal_plot_modes <- temporal_diagnostics[
+  variance_bearing == TRUE, time_component
+]
+if (!length(temporal_plot_modes)) temporal_plot_modes <- 1L
 png(
-  file.path(args$output_dir, "top_fpc_temporal_panels.png"),
-  width = 360L * top_count, height = 330L, res = 120L
+  file.path(args$output_dir, "temporal_eigencomponent_diagnostics.png"),
+  width = 620L * length(temporal_plot_modes), height = 470L, res = 120L
 )
-par(mfrow = c(1L, top_count), mar = c(3.5, 3.5, 3, 1))
-for (component in seq_len(top_count)) {
-  index <- product_index[component]
-  profile <- sqrt(index$eigenvalue) * eig$funcs$Theta[, index$time_component]
+par(mfrow = c(1L, length(temporal_plot_modes)), mar = c(4, 4.2, 4, 1))
+for (k in temporal_plot_modes) {
+  profile <- temporal_functions[, k]
+  if (profile[[length(profile)]] < profile[[temporal_baseline_index]]) {
+    profile <- -profile
+  }
+  rms <- sqrt(sum(temporal_weights * profile^2) / sum(temporal_weights))
+  diagnostic_row <- temporal_diagnostics[time_component == k]
   plot(
-    t_grid, profile, type = "l", lwd = 2, col = "#2C7FB8",
-    xlab = "Years from baseline", ylab = "1-SD loading",
-    main = sprintf("FPC %d: (%d, %d, %d)", component,
-      index$row_component, index$column_component, index$time_component)
+    t_grid, profile / rms, type = "l", lwd = 2.4,
+    col = if (diagnostic_row$dynamic_screen) "#D95F0E" else "#2C7FB8",
+    xlab = "Years from baseline", ylab = "Eigenfunction (unit RMS)",
+    main = sprintf(
+      "Temporal mode %d: %.3f%% PVE\nnon-constant fraction = %.3f%%",
+      k, 100 * diagnostic_row$marginal_variance_fraction,
+      100 * diagnostic_row$nonconstant_fraction
+    )
   )
   abline(v = 0, h = 0, lty = 3, col = "grey60")
 }
 dev.off()
 
-group_colors <- c(
-  "AD at baseline" = "#D73027",
-  "MCI-to-AD converter" = "#FC8D59",
-  "MCI non-converter" = "#4575B4"
-)
-group_shapes <- c(
-  "AD at baseline" = 17,
-  "MCI-to-AD converter" = 19,
-  "MCI non-converter" = 19
-)
+continuum_palette <- grDevices::hcl.colors(256L, palette = "Viridis")
+continuum_color <- function(coordinate) {
+  index <- 1L + floor(pmin(1, pmax(0, coordinate)) * 255L)
+  continuum_palette[index]
+}
+subject_continuum_colors <- continuum_color(score_table$latent_coordinate)
+
+draw_continuum_embedding <- function(embedding, method_name) {
+  plot(
+    embedding,
+    type = "n",
+    xlab = paste(method_name, "1"), ylab = paste(method_name, "2"),
+    main = method_name
+  )
+  points(
+    embedding,
+    pch = 19,
+    col = grDevices::adjustcolor(subject_continuum_colors, alpha.f = 0.78),
+    cex = 0.90
+  )
+}
+
 png(
-  file.path(args$output_dir, "fpc_score_umap_by_patient_group.png"),
-  width = 1050L, height = 850L, res = 140L
+  continuum_output_file("fpc_score_embedding_comparison_by_continuum", "png"),
+  width = 1800L, height = 620L, res = 140L
 )
-par(mar = c(4.5, 4.5, 4.5, 10), xpd = TRUE)
-plot(
-  umap_embedding,
-  type = "n",
-  xlab = "UMAP 1", ylab = "UMAP 2",
-  main = "UMAP of longitudinal MatFPCA scores"
-)
+par(mfrow = c(1L, 3L), mar = c(4.2, 4.2, 4.2, 1), oma = c(0, 0, 2.5, 0))
+for (method in names(embedding_fit$embeddings)) {
+  draw_continuum_embedding(embedding_fit$embeddings[[method]], method)
+  legend_values <- seq(0, 1, length.out = 5L)
+  legend(
+    "topright",
+    legend = sprintf("%.2f", legend_values),
+    col = continuum_color(legend_values),
+    pch = 19, pt.cex = 0.9, bty = "n", cex = 0.72,
+    title = "coordinate"
+  )
+}
 mtext(
   sprintf(
-    "%d standardized FPC scores; patient labels used only for color",
-    ncol(umap_input)
+    "Continuous morphology coordinate: principal curve through %d raw FPC scores",
+    ncol(score_input)
   ),
-  side = 3, line = 0.5, cex = 0.82
-)
-draw_order <- order(factor(
-  true_groups,
-  levels = c("MCI non-converter", "MCI-to-AD converter", "AD at baseline")
-))
-points(
-  umap_embedding[draw_order, , drop = FALSE],
-  pch = group_shapes[true_groups[draw_order]],
-  col = grDevices::adjustcolor(group_colors[true_groups[draw_order]], alpha.f = 0.78),
-  cex = ifelse(true_groups[draw_order] == "AD at baseline", 1.15, 0.9)
-)
-legend(
-  "right", inset = c(-0.38, 0),
-  legend = names(group_colors),
-  col = group_colors,
-  pch = group_shapes[names(group_colors)],
-  pt.cex = 1.1,
-  bty = "n"
+  side = 3L, outer = TRUE, line = 0.6, cex = 0.95
 )
 dev.off()
 
-# Pick the subject nearest the median held-out error in every patient group.
-example_subjects <- reconstruction_metrics[split == "test", {
-  group_median <- median(rmse)
-  .SD[which.min(abs(rmse - group_median)), .(PTID)]
-}, by = patient_group]
+png(
+  continuum_output_file("fpc_score_umap_by_continuum", "png"),
+  width = 1050L, height = 850L, res = 140L
+)
+par(mar = c(4.5, 4.5, 5, 1))
+draw_continuum_embedding(embedding_fit$embeddings$UMAP, "UMAP")
+mtext(
+  sprintf(
+    "Curve explains %.1f%% of score variation; coordinate-age Spearman %.3f",
+    100 * continuum_fit$variance_explained,
+    continuum_diagnostics$coordinate_vs_age_spearman
+  ),
+  side = 3L, line = 0.45, cex = 0.82
+)
+legend_values <- seq(0, 1, length.out = 6L)
+legend(
+  "topright", legend = sprintf("%.1f", legend_values),
+  col = continuum_color(legend_values), pch = 19, bty = "n",
+  title = "morphology coordinate"
+)
+dev.off()
 
 png(
-  file.path(args$output_dir, "reconstruction_examples_by_group.png"),
-  width = 1600L, height = 350L * nrow(example_subjects), res = 120L
+  continuum_output_file("reconstructed_mri_continuum", "png"),
+  width = 390L * args$continuum_landmarks,
+  height = 410L,
+  res = 120L, bg = "white"
 )
-par(mfrow = c(nrow(example_subjects), 5L), mar = c(1, 1, 3.6, 1))
-for (example_index in seq_len(nrow(example_subjects))) {
-  subject <- example_subjects$PTID[[example_index]]
-  test_row <- meta[PTID == subject & split == "test", analysis_row]
-  training_candidates <- meta[PTID == subject & split == "train"]
-  train_row <- training_candidates$analysis_row[[which.min(abs(training_candidates$time_year))]]
-  observed_train <- matrix(image_matrix[train_row, ], nrow = image_dim[[1L]])
-  reconstructed_train <- reconstruction_store[[subject]][[as.character(train_row)]]
-  observed_test <- matrix(image_matrix[test_row, ], nrow = image_dim[[1L]])
-  reconstructed_test <- reconstruction_store[[subject]][[as.character(test_row)]]
-  difference <- reconstructed_test - observed_test
-  difference_limit <- max(abs(difference))
-
+par(
+  mfrow = c(1L, args$continuum_landmarks),
+  mar = c(1, 1, 2.8, 1), cex.main = 1.05
+)
+for (index in seq_along(latent_landmark_positions)) {
   write_image_panel(
-    observed_train, gray_palette, c(0, 1),
-    sprintf("%s\n%s\nTrain original, t = %.2f y",
-      example_subjects$patient_group[[example_index]], subject, meta$time_year[[train_row]])
-  )
-  write_image_panel(
-    reconstructed_train, gray_palette, c(0, 1),
-    sprintf("Train reconstruction\nRMSE %.3f",
-      reconstruction_metrics[analysis_row == train_row, rmse])
-  )
-  write_image_panel(
-    observed_test, gray_palette, c(0, 1),
-    sprintf("Held-out original\nt = %.2f y", meta$time_year[[test_row]])
-  )
-  write_image_panel(
-    reconstructed_test, gray_palette, c(0, 1),
-    sprintf("Held-out prediction\nRMSE %.3f",
-      reconstruction_metrics[analysis_row == test_row, rmse])
-  )
-  write_image_panel(
-    difference, diverging_palette, c(-difference_limit, difference_limit),
-    "Prediction - original"
+    latent_reconstructed_images[[index]], gray_palette, c(0, 1),
+    sprintf("Coordinate %.2f", latent_landmark_positions[[index]])
   )
 }
 dev.off()
 
+png(
+  continuum_output_file("smoothed_observed_mri_continuum", "png"),
+  width = 390L * args$continuum_landmarks,
+  height = 410L,
+  res = 120L, bg = "white"
+)
+par(
+  mfrow = c(1L, args$continuum_landmarks),
+  mar = c(1, 1, 2.8, 1), cex.main = 1.05
+)
+for (index in seq_along(latent_landmark_positions)) {
+  write_image_panel(
+    smoothed_observed_images[[index]], gray_palette, c(0, 1),
+    sprintf("Coordinate %.2f", latent_landmark_positions[[index]])
+  )
+}
+dev.off()
+
+png(
+  continuum_output_file("observed_mri_continuum", "png"),
+  width = 390L * args$continuum_landmarks,
+  height = 410L,
+  res = 120L, bg = "white"
+)
+par(
+  mfrow = c(1L, args$continuum_landmarks),
+  mar = c(1, 1, 2.8, 1), cex.main = 1.05
+)
+for (index in seq_len(nrow(latent_landmarks))) {
+  landmark <- latent_landmarks[index]
+  observed <- matrix(
+    image_matrix[landmark$analysis_row, ], nrow = image_dim[[1L]]
+  )
+  write_image_panel(
+    observed, gray_palette, c(0, 1),
+    sprintf("Coordinate %.2f", landmark$subject_coordinate)
+  )
+}
+dev.off()
+
+png(
+  continuum_output_file("latent_coordinate_vs_age", "png"),
+  width = 1050L, height = 780L, res = 140L
+)
+par(mar = c(5, 4.8, 4.8, 1))
+plot(
+  score_table$latent_coordinate,
+  score_table$baseline_age,
+  pch = 19, cex = 0.72,
+  col = grDevices::adjustcolor(subject_continuum_colors, alpha.f = 0.60),
+  xlab = "Continuous morphology coordinate",
+  ylab = "Baseline age (years)",
+  main = "Age varies along, but does not define, the MRI morphology continuum"
+)
+age_smoother <- smooth.spline(
+  score_table$latent_coordinate,
+  score_table$baseline_age,
+  df = 4
+)
+coordinate_grid <- seq(0, 1, length.out = 300L)
+lines(
+  coordinate_grid,
+  predict(age_smoother, coordinate_grid)$y,
+  col = "#333333", lwd = 3
+)
+mtext(
+  sprintf(
+    "Spearman rho = %.3f; coordinate learned from MRI scores without age",
+    continuum_diagnostics$coordinate_vs_age_spearman
+  ),
+  side = 3L, line = 0.5, cex = 0.85
+)
+dev.off()
+
 analysis_manifest <- copy(meta)
 analysis_manifest[, image_file := basename(image_file)]
+score_metadata_columns <- c(
+  "PTID", "baseline_age", "latent_coordinate", "linear_latent_coordinate",
+  "latent_curve_residual",
+  "PCA1", "PCA2", "UMAP1", "UMAP2", "TSNE1", "TSNE2"
+)
+setcolorder(score_table, c(
+  score_metadata_columns, setdiff(names(score_table), score_metadata_columns)
+))
 fwrite(analysis_manifest, file.path(args$output_dir, "analysis_manifest.csv"))
 fwrite(prepared$exclusions, file.path(args$output_dir, "exclusion_summary.csv"))
 fwrite(reconstruction_metrics, file.path(args$output_dir, "reconstruction_metrics.csv"))
 fwrite(reconstruction_summary, file.path(args$output_dir, "reconstruction_summary.csv"))
 fwrite(product_index, file.path(args$output_dir, "product_fpc_eigenvalues.csv"))
-fwrite(score_table, file.path(args$output_dir, "fpc_scores_and_umap.csv"))
-fwrite(representation_metrics,
-  file.path(args$output_dir, "umap_representation_diagnostics.csv"))
-fwrite(neighbor_diagnostics,
-  file.path(args$output_dir, "umap_neighbor_diagnostics.csv"))
-fwrite(probe_recall, file.path(args$output_dir, "knn_probe_group_recall.csv"))
-fwrite(probe_confusion, file.path(args$output_dir, "knn_probe_confusion.csv"))
+fwrite(
+  temporal_diagnostics,
+  file.path(args$output_dir, "temporal_eigencomponent_diagnostics.csv")
+)
+fwrite(score_table, continuum_output_file("fpc_scores_embeddings", "csv"))
+fwrite(embedding_fit$metrics,
+  continuum_output_file("embedding_quality_metrics", "csv"))
+fwrite(continuum_diagnostics,
+  continuum_output_file("latent_coordinate_diagnostics", "csv"))
+fwrite(latent_landmarks,
+  continuum_output_file("latent_coordinate_landmarks", "csv"))
+fwrite(latent_curve_table,
+  continuum_output_file("latent_principal_curve_scores", "csv"))
 
 compact_model <- list(
   covariance = covariance_fit$C,
@@ -1086,14 +1388,25 @@ compact_model <- list(
   image_dim = image_dim,
   t_grid_years = t_grid,
   ranks = ranks,
+  temporal_eigencomponent_diagnostics = temporal_diagnostics,
   subject_ids = subject_ids,
-  umap_embedding = umap_embedding,
-  representation_metrics = representation_metrics,
+  embeddings = embedding_fit$embeddings,
+  embedding_metrics = embedding_fit$metrics,
+  morphology_continuum = list(
+    input_fpcs = ncol(score_input),
+    score_scaling = "none",
+    coordinate = setNames(continuum_fit$coordinate, subject_ids),
+    residual_distance = setNames(continuum_fit$residual_distance, subject_ids),
+    curve_coordinate = continuum_fit$curve_coordinate,
+    curve_scores = continuum_fit$curve_scores,
+    diagnostics = continuum_diagnostics,
+    landmarks = latent_landmarks
+  ),
   arguments = args
 )
-saveRDS(compact_model, file.path(args$output_dir, "adni_matfpca_model.rds"))
+saveRDS(compact_model, continuum_output_file("adni_matfpca_model", "rds"))
 suppressWarnings(capture.output(
-  sessionInfo(), file = file.path(args$output_dir, "session_info.txt")
+  sessionInfo(), file = continuum_output_file("session_info", "txt")
 ))
 
 run_summary <- c(
@@ -1102,51 +1415,72 @@ run_summary <- c(
   sprintf("Eligible images: %d", nrow(meta)),
   sprintf("Training images: %d", sum(meta$split == "train")),
   sprintf("Held-out images/subjects: %d", sum(meta$split == "test")),
-  sprintf(
-    "Patient groups (subjects): %s",
-    paste(
-      names(table(subject_table$patient_group)), table(subject_table$patient_group),
-      sep = "=", collapse = "; "
-    )
-  ),
   sprintf("Image dimension after pooling: %s", paste(image_dim, collapse = " x ")),
   sprintf("Training-inferred brain-mask coverage: %.2f%%", 100 * mean(brain_mask)),
   sprintf("Time grid in years: %.6f to %.6f by %.6f", min(t_grid), max(t_grid), args$time_step_months / 12),
   sprintf("MatFPCA mode ranks: %s", paste(ranks, collapse = " x ")),
+  sprintf(
+    "Leading temporal mode: %.4f%% marginal PVE; %.4f%% non-constant energy",
+    100 * temporal_diagnostics$marginal_variance_fraction[[1L]],
+    100 * temporal_diagnostics$nonconstant_fraction[[1L]]
+  ),
+  if (any(temporal_diagnostics$dynamic_screen)) {
+    paste(
+      "Material non-constant temporal mode(s):",
+      paste(vapply(
+        which(temporal_diagnostics$dynamic_screen),
+        function(row) sprintf(
+          "%d (%.4f%% marginal PVE; %.2f%% non-constant energy; leading full product rank %d)",
+          temporal_diagnostics$time_component[[row]],
+          100 * temporal_diagnostics$marginal_variance_fraction[[row]],
+          100 * temporal_diagnostics$nonconstant_fraction[[row]],
+          temporal_diagnostics$leading_full_product_rank[[row]]
+        ),
+        character(1L)
+      ), collapse = "; ")
+    )
+  } else {
+    "Material non-constant temporal modes: none under the prespecified diagnostic screen."
+  },
+  if (any(temporal_diagnostics$dynamic_screen &
+          temporal_diagnostics$time_component > ranks[["time"]])) {
+    sprintf(
+      "Temporal truncation implication: screened dynamic mode(s) lie beyond retained K=%d; the leading retained product FPCs therefore use the near-constant temporal mode.",
+      ranks[["time"]]
+    )
+  } else {
+    "Temporal truncation implication: all screened dynamic modes are retained."
+  },
   sprintf("Estimated noise variance: %.8g", covariance_fit$C$sig2),
   sprintf("MatFPCA elapsed seconds: %.3f", analysis_fit$elapsed_seconds),
   sprintf(
-    "UMAP input: %d standardized FPC scores; neighbors=%d; min_dist=%.3f",
-    ncol(umap_input), umap_neighbors, args$umap_min_dist
+    "Continuum input: %d leading raw FPC scores (%.2f%% of retained product variance)",
+    ncol(score_input), 100 * product_index$pve[[n_score_pcs]]
   ),
   sprintf(
-    "Known-group silhouette (FPC / UMAP): %.4f / %.4f",
-    representation_metrics$known_group_silhouette_fpc,
-    representation_metrics$known_group_silhouette_umap
+    "Morphology continuum variance explained (principal curve / linear axis): %.2f%% / %.2f%%",
+    100 * continuum_fit$variance_explained,
+    100 * continuum_fit$linear_variance_explained
   ),
   sprintf(
-    "%d-fold CV %d-NN probe accuracy / balanced accuracy: %.4f / %.4f",
-    representation_metrics$knn_probe_folds,
-    representation_metrics$knn_probe_neighbors,
-    representation_metrics$knn_probe_accuracy,
-    representation_metrics$knn_probe_balanced_accuracy
+    "Principal-curve vs linear-axis rank correlation: %.4f",
+    continuum_diagnostics$curve_vs_linear_spearman
   ),
   sprintf(
-    "MCI converter-vs-non-converter probe accuracy / balanced accuracy: %.4f / %.4f",
-    representation_metrics$mci_binary_knn_probe_accuracy,
-    representation_metrics$mci_binary_knn_probe_balanced_accuracy
+    "Morphology-coordinate vs age Spearman correlation: %.4f",
+    continuum_diagnostics$coordinate_vs_age_spearman
   ),
-  sprintf(
-    "Majority / balanced-chance baselines: %.4f / %.4f",
-    representation_metrics$majority_class_accuracy,
-    representation_metrics$balanced_chance_accuracy
-  ),
-  "Interpretation: UMAP is exploratory; apparent islands are not evidence of clinical separation without support from the FPC-space diagnostics.",
+  "Within this script, clinical outcome labels were not used for subject sampling, holdout selection, continuum fitting, embedding, plotting, or diagnostics.",
+  "Primary interpretation: dominant MRI-score variation follows an almost linear continuum associated with, but not defined by, age.",
+  "PCA, UMAP, and t-SNE are visualization checks of the continuous score geometry.",
+  "",
+  "Embedding quality:",
+  paste(capture.output(print(embedding_fit$metrics)), collapse = "\n"),
   "",
   "Reconstruction summary (metrics evaluated inside the inferred brain mask):",
   paste(capture.output(print(reconstruction_summary)), collapse = "\n")
 )
-writeLines(run_summary, file.path(args$output_dir, "run_summary.txt"))
+writeLines(run_summary, continuum_output_file("run_summary", "txt"))
 
 log_message("Analysis complete. Results: ", args$output_dir)
 cat(paste(run_summary, collapse = "\n"), "\n")
