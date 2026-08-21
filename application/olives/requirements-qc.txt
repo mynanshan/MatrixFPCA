@@ -1,0 +1,2 @@
+pyarrow>=18.1,<19
+Pillow>=10

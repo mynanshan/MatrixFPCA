@@ -40,13 +40,17 @@ create_matrix_funcdata_irreg = function(
     if (!all(ms == sapply(X_list, function(x) dim(x)[3])))
       stop("Not all t_idx_list[[i]] and X_list[[i]] have matched length.")
   } else if (is.vector(X_list) && is.character(X_list)) {
+    if (!length(X_list)) stop("X_list cannot be empty")
+    if (anyNA(X_list) || any(!file.exists(X_list))) {
+      stop("Every disk-backed X_list path must name an existing RDS file")
+    }
     X1 = readRDS(X_list[1])
     if (!is(X1, "Tensor"))
       stop("Each X_list[[i]] has to be an {rTensor} tensor")
     if (!length(dim(X1)) == 3L)
       stop("Each X_list[[i]] has to be a 3d")
-    p = dim(X1[[1]])[1]
-    q = dim(X1[[1]])[2]
+    p = dim(X1)[1]
+    q = dim(X1)[2]
     in_mem = FALSE
   } else stop("X_list has to be a list")
   
@@ -140,7 +144,8 @@ get_subj_tnsr.matfdata.irreg = function(data, i, shape_check=TRUE) {
     X_i = readRDS(data$X_list[[i]])
     if (shape_check) {
       # shape check when reading the data
-      stopifnot(length(dim(X_i)==3))
+      stopifnot(is(X_i, "Tensor"))
+      stopifnot(length(dim(X_i)) == 3L)
       stopifnot(dim(X_i)[1] == data$vdim[1])
       stopifnot(dim(X_i)[2] == data$vdim[2])
     }

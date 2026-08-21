@@ -26,6 +26,11 @@ data/
 **/output_files/
 **/deprecated/
 *.rds
+application/adni-latent/latents/
+application/adni-latent/concept_audit/
+application/adni-latent/reconstruction_probe/
+application/adni-latent/resources/templateflow/*.nii*
+application/olives/output/
 
 # Python caches (used by helper scripts or notebooks)
 __pycache__/
