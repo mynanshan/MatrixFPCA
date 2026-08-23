@@ -36,17 +36,18 @@ defaults <- list(
   holdout_fraction = 0.20,
   max_month = 48,
   prediction_step_months = 6,
-  feature_rank = 64L,
+  feature_pve = 0.98,
+  feature_rank_cap = 768L,
   mean_df = 5L,
   weight_scheme = "identity",
   weight_folds = 3L,
   opw_iter = 1L,
   nbasis = "theory",
-  mode_pve = 0.90,
-  row_rank_cap = 24L,
-  column_rank_cap = 24L,
+  mode_pve = 0.98,
+  retain_all_spatial_modes = TRUE,
   time_rank_cap = 4L,
   top_scores = 20L,
+  exported_scores = 100L,
   diagnostic_coordinates = 192L,
   reconstructed_subjects = 3L,
   retrieval_candidates = 250L,
@@ -60,13 +61,14 @@ usage <- function() {
     "Important options:\n",
     "  --metadata=PATH                 BrainIAC extraction metadata.csv\n",
     "  --output-dir=PATH               Analysis output directory\n",
-    "  --feature-rank=64               Training-only feature PCA dimension\n",
+    "  --feature-pve=0.98              Minimum training-only feature-PCA variance retained\n",
+    "  --feature-rank-cap=768          Safety cap; default permits the full encoder width\n",
     "  --holdout-fraction=0.20         Subject-level validation fraction; one interior target each\n",
     "  --weight-scheme=identity        identity or gaussian_refined\n",
-    "  --mode-pve=0.90                 Marginal rank target before rank caps\n",
-    "  --row-rank-cap=24               Maximum retained token-mode rank\n",
-    "  --column-rank-cap=24            Maximum retained feature-mode rank\n",
+    "  --mode-pve=0.98                 Temporal rank target; spatial modes are untruncated by default\n",
+    "  --retain-all-spatial-modes=true Keep all numerically positive token/feature modes\n",
     "  --time-rank-cap=4               Maximum retained temporal rank\n",
+    "  --exported-scores=100            Leading product scores written to CSV\n",
     "  --prediction-step-months=6      Complete-grid reconstruction spacing\n",
     "  --reconstruction-analysis=false Skip latent/image reconstruction outputs\n",
     "  --cache=true                    Reuse centered tensors and fitted model\n",
@@ -117,14 +119,15 @@ if (!is.finite(args$holdout_fraction) || args$holdout_fraction < 0 ||
   stop("--holdout-fraction must lie in [0, 1).")
 }
 positive_integer_options <- c(
-  "feature_rank", "mean_df", "weight_folds", "opw_iter", "row_rank_cap",
-  "column_rank_cap", "time_rank_cap", "top_scores", "diagnostic_coordinates",
+  "feature_rank_cap", "mean_df", "weight_folds", "opw_iter",
+  "time_rank_cap", "top_scores", "exported_scores", "diagnostic_coordinates",
   "reconstructed_subjects", "retrieval_candidates"
 )
 if (any(vapply(args[positive_integer_options], function(value) {
   !is.finite(value) || value < 1L
 }, logical(1)))) stop("Rank, count, and iteration options must be positive.")
-if (args$mean_df < 3L || args$mode_pve <= 0 || args$mode_pve > 1 ||
+if (args$mean_df < 3L || args$feature_pve <= 0 || args$feature_pve > 1 ||
+    args$mode_pve <= 0 || args$mode_pve > 1 ||
     args$max_month <= 0 || args$prediction_step_months <= 0) {
   stop("Invalid mean, PVE, or temporal-grid setting.")
 }
@@ -153,19 +156,6 @@ tensor_dir <- file.path(cache_dir, "centered_subjects")
 dir.create(tensor_dir, recursive = TRUE, showWarnings = FALSE)
 
 metadata <- fread(args$metadata, na.strings = c("", "NA"))
-# Accept the explicit names emitted by extract_brainiac_latents.py while also
-# keeping compatibility with early pilot manifests used during development.
-column_aliases <- c(
-  time_month = "model_time_month",
-  viscode = "mri_VISCODE2",
-  latent_cols = "latent_columns"
-)
-for (canonical_name in names(column_aliases)) {
-  source_name <- column_aliases[[canonical_name]]
-  if (!canonical_name %in% names(metadata) && source_name %in% names(metadata)) {
-    metadata[, (canonical_name) := get(source_name)]
-  }
-}
 required_columns <- c(
   "subject_id", "visit_id", "image_id", "time_month", "viscode",
   "latent_path", "nifti_path", "latent_rows", "latent_cols"
@@ -279,16 +269,16 @@ if (anyNA(analysis_code_hashes)) {
   stop("Could not fingerprint one or more analysis source files.")
 }
 configuration_signature <- paste(
-  "adni_brainiac_patch_matfpca_v4_subject_weighted_feature_mean",
+  "adni_brainiac_patch_matfpca_v5_common_crop_high_retention",
   metadata_hash,
   paste(analysis_code_hashes, collapse = ","),
   paste(latent_file_information$size, latent_file_hashes, collapse = ","),
   paste(metadata$visit_id, metadata$split, collapse = ","),
   args$seed, args$holdout_fraction, args$max_month,
-  args$feature_rank, args$mean_df, args$weight_scheme,
+  args$feature_pve, args$feature_rank_cap, args$mean_df, args$weight_scheme,
   args$weight_folds, args$opw_iter, args$nbasis, args$mode_pve,
-  args$row_rank_cap, args$column_rank_cap, args$time_rank_cap,
-  args$prediction_step_months,
+  args$retain_all_spatial_modes, args$time_rank_cap,
+  args$exported_scores, args$prediction_step_months,
   sep = "|"
 )
 
@@ -307,11 +297,11 @@ if (is.null(preprocessing)) {
   training_metadata <- metadata[split == "population_train"]
   log_message(
     "Fitting population-training-only feature PCA (", nrow(training_metadata),
-    " visits / ", length(population_subject_ids), " subjects, target rank ",
-    args$feature_rank, ")..."
+    " visits / ", length(population_subject_ids), " subjects, minimum PVE ",
+    sprintf("%.2f%%", 100 * args$feature_pve), ")..."
   )
   feature_projection <- fit_feature_projection(
-    training_metadata, args$feature_rank
+    training_metadata, args$feature_pve, args$feature_rank_cap
   )
   log_message(
     "Feature PCA retained ", feature_projection$retained_rank,
@@ -425,11 +415,23 @@ if (is.null(analysis_fit)) {
     )
   })
   eig_full <- eigen_matfcov_quadrature(covariance_fit$C)
+  spatial_ranks <- if (args$retain_all_spatial_modes) {
+    log_message(
+      "Retaining every numerically positive token and feature mode; spatial ",
+      "rank truncation is disabled."
+    )
+    c(
+      row = positive_mode_rank(eig_full$values$lam_phi),
+      column = positive_mode_rank(eig_full$values$lam_psi)
+    )
+  } else {
+    c(
+      row = rank_for_pve(eig_full$values$lam_phi, args$mode_pve),
+      column = rank_for_pve(eig_full$values$lam_psi, args$mode_pve)
+    )
+  }
   ranks <- c(
-    row = rank_for_pve(eig_full$values$lam_phi, args$mode_pve, args$row_rank_cap),
-    column = rank_for_pve(
-      eig_full$values$lam_psi, args$mode_pve, args$column_rank_cap
-    ),
+    spatial_ranks,
     time = rank_for_pve(
       eig_full$values$lam_theta, args$mode_pve, args$time_rank_cap
     )
@@ -762,7 +764,9 @@ legend("topright", legend = paste("Mode", seq_len(temporal_display_count)),
        col = seq_len(temporal_display_count), lty = 1, bty = "n")
 dev.off()
 
-product <- ordered_product_scores(scores, eig)
+product <- ordered_product_scores(
+  scores, eig, max_components = args$exported_scores
+)
 product_index <- product$index
 score_matrix <- product$scores
 colnames(score_matrix) <- sprintf("FPC%03d", seq_len(ncol(score_matrix)))
@@ -1177,7 +1181,11 @@ run_summary <- list(
   original_latent_shape = unname(model$original_representation_shape),
   compressed_latent_shape = unname(model$representation_shape),
   selected_matfpca_ranks = unname(ranks),
+  feature_pca_requested_pve = args$feature_pve,
   feature_pca_retained_pve = feature_projection$retained_pve,
+  retain_all_spatial_modes = args$retain_all_spatial_modes,
+  temporal_mode_pve = args$mode_pve,
+  exported_product_scores = ncol(score_matrix),
   covariance_estimand = "visit/pair pooled identity MatFPCA estimator",
   common_prediction_grid_years = prediction_years,
   screening_predictions = paste(

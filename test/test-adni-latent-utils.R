@@ -55,12 +55,14 @@ projection_metadata <- data.table(
   subject_id = c("A", "A", "B"),
   latent_path = projection_paths
 )
-projection <- fit_feature_projection(projection_metadata, rank = 2L)
+projection <- fit_feature_projection(projection_metadata, pve = 1, rank_cap = 2L)
 stopifnot(
   isTRUE(projection$subject_weighted),
   all.equal(projection$center, c(0.5, 2), tolerance = 1e-12),
   projection$training_token_rows == 3L,
-  projection$effective_weighted_token_rows == 2
+  projection$effective_weighted_token_rows == 2,
+  projection$retained_pve >= projection$requested_pve - 1e-12,
+  positive_mode_rank(c(3, 1, 1e-15)) == 2L
 )
 
 # MONAI flattening has width varying fastest, then height, then depth.

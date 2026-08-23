@@ -43,13 +43,31 @@ rank_for_pve <- function(values, pve, cap = Inf) {
   min(rank, as.integer(min(cap, length(values))))
 }
 
+positive_mode_rank <- function(values, relative_tolerance = 1e-10) {
+  values <- as.numeric(values)
+  if (!length(values) || !is.finite(max(values)) || max(values) <= 0) {
+    stop("Cannot select positive modes from a non-positive eigenspectrum.")
+  }
+  max(1L, sum(values > max(values) * relative_tolerance))
+}
+
 effective_rank <- function(values) {
   values <- pmax(as.numeric(values), 0)
   if (!length(values) || sum(values) <= 0) return(NA_real_)
   sum(values)^2 / sum(values^2)
 }
 
-fit_feature_projection <- function(metadata, rank, subject_column = "subject_id") {
+fit_feature_projection <- function(
+  metadata, pve = 0.98, rank_cap = Inf, subject_column = "subject_id"
+) {
+  if (!is.numeric(pve) || length(pve) != 1L || !is.finite(pve) ||
+      pve <= 0 || pve > 1) {
+    stop("Feature-PCA pve must be one finite number in (0, 1].")
+  }
+  if (!is.numeric(rank_cap) || length(rank_cap) != 1L ||
+      is.na(rank_cap) || rank_cap < 1) {
+    stop("Feature-PCA rank_cap must be a positive number or Inf.")
+  }
   first <- read_npy_matrix(metadata$latent_path[[1L]])
   feature_count <- ncol(first)
   token_count <- nrow(first)
@@ -80,14 +98,24 @@ fit_feature_projection <- function(metadata, rank, subject_column = "subject_id"
   decomposition <- eigen(0.5 * (covariance + t(covariance)), symmetric = TRUE)
   positive <- which(decomposition$values > max(decomposition$values) * 1e-10)
   if (!length(positive)) stop("The latent feature covariance has no positive rank.")
-  retained_rank <- min(as.integer(rank), length(positive))
+  positive_values <- pmax(decomposition$values[positive], 0)
+  target_rank <- which(cumsum(positive_values) / sum(positive_values) >= pve)[[1L]]
+  retained_rank <- min(target_rank, length(positive), floor(rank_cap))
+  retained_pve <- sum(positive_values[seq_len(retained_rank)]) / sum(positive_values)
+  if (retained_pve + 1e-12 < pve) {
+    warning(
+      "Feature-PCA rank cap retained only ", sprintf("%.2f%%", 100 * retained_pve),
+      " variance, below the requested ", sprintf("%.2f%%", 100 * pve), ".",
+      call. = FALSE
+    )
+  }
   list(
     center = center,
     rotation = decomposition$vectors[, seq_len(retained_rank), drop = FALSE],
     eigenvalues = decomposition$values,
     retained_rank = retained_rank,
-    retained_pve = sum(pmax(decomposition$values[seq_len(retained_rank)], 0)) /
-      sum(pmax(decomposition$values, 0)),
+    requested_pve = pve,
+    retained_pve = retained_pve,
     token_count = token_count,
     original_feature_count = feature_count,
     training_token_rows = row_count,
@@ -203,7 +231,7 @@ reconstruct_subject_latent <- function(model, subject_id, times, original_featur
   if (length(times) == 1L) reconstructions[[1L]] else reconstructions
 }
 
-ordered_product_scores <- function(scores, eig) {
+ordered_product_scores <- function(scores, eig, max_components = Inf) {
   values <- eig$values$lam_phi %o% eig$values$lam_psi %o% eig$values$lam_theta
   index <- data.table::as.data.table(arrayInd(seq_along(values), dim(values)))
   data.table::setnames(index, c("row_component", "column_component", "time_component"))
@@ -214,7 +242,8 @@ ordered_product_scores <- function(scores, eig) {
     cumulative_pve = cumsum(eigenvalue) / sum(eigenvalue)
   )]
   score_matrix <- matrix(scores@data, nrow = dim(scores)[[1L]])
-  offsets <- with(index, {
+  score_index <- index[seq_len(min(nrow(index), floor(max_components)))]
+  offsets <- with(score_index, {
     row_component +
       (column_component - 1L) * dim(scores)[[2L]] +
       (time_component - 1L) * dim(scores)[[2L]] * dim(scores)[[3L]]

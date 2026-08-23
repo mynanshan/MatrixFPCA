@@ -85,7 +85,7 @@ parse_options <- function(default_values) {
         "[--option=value ...]\n",
         "  --top-components=20       Leading product FPCs tested per layer\n",
         "  --min-reliability=0.20     Minimum model-based score reliability\n",
-        "  --minimum-subjects=250     Refuse undersized pilot inputs\n",
+        "  --minimum-subjects=250     Refuse undersized analysis inputs\n",
         "  --bootstrap-replicates=2000\n",
         "  --cache-targets=true       Reuse extracted regional log-Jacobians\n",
         sep = ""
@@ -127,6 +127,86 @@ roi_labels <- list(
   thalamus = c(10L, 49L)
 )
 local_regions <- c("hippocampus", "lateral_ventricles", "amygdala", "thalamus")
+foreground_roi_start <- c(16L, 16L, 0L)
+foreground_roi_end <- c(177L, 217L, 177L)
+model_image_size <- c(96L, 96L, 96L)
+patch_size <- c(16L, 16L, 16L)
+patch_grid <- model_image_size %/% patch_size
+
+nearest_resize_indices <- function(input_size, output_size) {
+  floor(seq.int(0L, output_size - 1L) * input_size / output_size) + 1L
+}
+
+crop_and_resize_atlas <- function(atlas) {
+  crop_indices <- Map(
+    function(start, end) seq.int(start + 1L, end),
+    foreground_roi_start, foreground_roi_end
+  )
+  cropped <- atlas[crop_indices[[1L]], crop_indices[[2L]], crop_indices[[3L]]]
+  resize_indices <- Map(
+    nearest_resize_indices, dim(cropped), model_image_size
+  )
+  cropped[resize_indices[[1L]], resize_indices[[2L]], resize_indices[[3L]]]
+}
+
+atlas_patch_counts <- function(mask) {
+  counts <- numeric(prod(patch_grid))
+  for (i in 0:(patch_grid[[1L]] - 1L)) {
+    for (j in 0:(patch_grid[[2L]] - 1L)) {
+      for (k in 0:(patch_grid[[3L]] - 1L)) {
+        token <- i * patch_grid[[2L]] * patch_grid[[3L]] +
+          j * patch_grid[[3L]] + k + 1L
+        counts[[token]] <- sum(mask[
+          i * patch_size[[1L]] + seq_len(patch_size[[1L]]),
+          j * patch_size[[2L]] + seq_len(patch_size[[2L]]),
+          k * patch_size[[3L]] + seq_len(patch_size[[3L]])
+        ])
+      }
+    }
+  }
+  counts
+}
+
+build_token_definitions <- function(atlas_96, maximum_tokens = 8L) {
+  brain_counts <- atlas_patch_counts(atlas_96 > 0)
+  coordinates <- data.table(
+    grid_i = rep(0:(patch_grid[[1L]] - 1L), each = patch_grid[[2L]] * patch_grid[[3L]]),
+    grid_j = rep(rep(0:(patch_grid[[2L]] - 1L), each = patch_grid[[3L]]),
+                 times = patch_grid[[1L]]),
+    grid_k = rep(0:(patch_grid[[3L]] - 1L), times = patch_grid[[1L]] * patch_grid[[2L]])
+  )
+  rows <- list()
+  position <- 0L
+  for (region in local_regions) {
+    roi_mask <- atlas_96 %in% roi_labels[[region]]
+    dim(roi_mask) <- dim(atlas_96)
+    roi_counts <- atlas_patch_counts(roi_mask)
+    candidates <- which(roi_counts > 0)
+    selected <- sort(head(candidates[order(-roi_counts[candidates], candidates)], maximum_tokens))
+    centroid <- colSums(
+      as.matrix(coordinates[candidates]) * roi_counts[candidates]
+    ) / sum(roi_counts[candidates])
+    remote_candidates <- setdiff(which(brain_counts > 0), candidates)
+    distances <- rowSums((
+      as.matrix(coordinates[remote_candidates]) -
+        matrix(centroid, nrow = length(remote_candidates), ncol = 3L, byrow = TRUE)
+    )^2)
+    remote <- sort(head(remote_candidates[order(-distances, remote_candidates)], length(selected)))
+    for (group in c("roi", "remote")) {
+      tokens <- if (group == "roi") selected else remote
+      position <- position + 1L
+      rows[[position]] <- data.table(
+        target = region,
+        group = group,
+        token_index_zero_based = tokens - 1L,
+        coordinates[tokens],
+        roi_voxels_in_token = roi_counts[tokens],
+        brain_voxels_in_token = brain_counts[tokens]
+      )
+    }
+  }
+  rbindlist(rows)
+}
 
 required_result_files <- c(
   "matfpca_model.rds", "analysis_manifest.csv", "subject_fpc_scores.csv",
@@ -147,7 +227,7 @@ reference_manifest[, subject_id := as.character(subject_id)]
 if (uniqueN(reference_manifest$subject_id) < args$minimum_subjects) {
   stop(
     "Interpretation requires at least ", args$minimum_subjects,
-    " subjects; refusing to analyze an undersized pilot."
+    " subjects; refusing to analyze an undersized cohort."
   )
 }
 reference_keys <- reference_manifest[, paste(subject_id, image_id, sep = "|")]
@@ -185,6 +265,12 @@ derive_deformation_paths <- function(nifti_path) {
 }
 
 target_cache <- file.path(args$output_dir, "visit_morphology_targets.csv")
+atlas <- as.array(readNifti(args$atlas))
+if (!identical(dim(atlas), c(193L, 229L, 193L))) {
+  stop("Atlas must use the registered 193 x 229 x 193 grid.")
+}
+token_definitions <- build_token_definitions(crop_and_resize_atlas(atlas))
+fwrite(token_definitions, file.path(args$output_dir, "token_definitions.csv"))
 physical_targets <- NULL
 if (args$cache_targets && file.exists(target_cache)) {
   candidate <- fread(target_cache)
@@ -198,7 +284,6 @@ if (args$cache_targets && file.exists(target_cache)) {
 
 if (is.null(physical_targets)) {
   log_message("Extracting atlas-defined regional log-Jacobian targets...")
-  atlas <- as.array(readNifti(args$atlas))
   roi_masks <- lapply(roi_labels, function(labels) atlas %in% labels)
   physical_targets <- reference_manifest[, .(
     subject_id, image_id, visit_id, time_year, time_month, split
@@ -337,10 +422,8 @@ rank_standardize <- function(values) {
   standardize(rank(as.numeric(values), ties.method = "average"))
 }
 
-score_reliability <- function(model, manifest) {
-  spatial_values <- model$eig$values$lam_phi %o% model$eig$values$lam_psi
-  dimensions <- c(dim(spatial_values), model$ranks[["time"]])
-  total <- array(0, dim = dimensions)
+score_reliability <- function(model, manifest, product_index) {
+  total <- numeric(nrow(product_index))
   conditioning <- manifest[split != "validation_test"]
   rows_by_subject <- split(
     conditioning$time_index,
@@ -354,15 +437,18 @@ score_reliability <- function(model, manifest) {
       decomposition$vectors,
       model$eig$funcs$Theta[indices, , drop = FALSE]
     )
-    for (row_mode in seq_len(nrow(spatial_values))) {
-      for (column_mode in seq_len(ncol(spatial_values))) {
-        denominator <- values + max(
-          1e-8, model$covariance$sig2 / spatial_values[row_mode, column_mode]
-        )
-        total[row_mode, column_mode, ] <- total[row_mode, column_mode, ] +
-          colSums(sweep(projected_theta^2, 1L, denominator, "/")) *
-          model$eig$values$lam_theta
-      }
+    for (component in seq_len(nrow(product_index))) {
+      row_mode <- product_index$row_component[[component]]
+      column_mode <- product_index$column_component[[component]]
+      time_mode <- product_index$time_component[[component]]
+      spatial_signal <- model$eig$values$lam_phi[[row_mode]] *
+        model$eig$values$lam_psi[[column_mode]]
+      denominator <- values + max(
+        1e-8, model$covariance$sig2 / spatial_signal
+      )
+      total[[component]] <- total[[component]] +
+        sum(projected_theta[, time_mode]^2 / denominator) *
+        model$eig$values$lam_theta[[time_mode]]
     }
   }
   total / length(rows_by_subject)
@@ -380,7 +466,7 @@ partial_association <- function(y, x, covariates) {
     return(list(n = length(y), beta = NA_real_, partial_r2 = NA_real_, p = NA_real_))
   }
   # Rank-transform first so the adjusted analysis targets the same monotone
-  # relationship as Spearman correlation and is less driven by pilot outliers.
+  # relationship as Spearman correlation and is less driven by outliers.
   yz <- rank_standardize(y)
   xz <- rank_standardize(x)
   covariates <- apply(covariates, 2L, rank_standardize)
@@ -424,10 +510,6 @@ continuum_sensitivity_rows <- list()
 embedding_metric_rows <- list()
 association_position <- 0L
 localization_position <- 0L
-token_definitions <- fread(file.path(
-  "application", "adni-latent", "concept_audit", "token_definitions.csv"
-))
-
 for (layer_position in seq_len(nrow(layer_specs))) {
   layer <- layer_specs$layer[[layer_position]]
   result_dir <- layer_specs$result_dir[[layer_position]]
@@ -446,11 +528,8 @@ for (layer_position in seq_len(nrow(layer_specs))) {
     fread(file.path(result_dir, "product_fpc_eigenvalues.csv"))$eigenvalue
   )]
 
-  reliability_array <- score_reliability(model, manifest)
-  product_index[, mean_score_reliability := mapply(
-    function(row, column, time) reliability_array[row, column, time],
-    row_component, column_component, time_component
-  )]
+  product_index[, mean_score_reliability :=
+    score_reliability(model, manifest, product_index)]
   scores <- as.matrix(score_table[, ..fpc_columns])
   colnames(scores) <- paste0("FPC", product_index$product_pc)
   subject_data <- subject_morphology[score_table, on = "subject_id"]

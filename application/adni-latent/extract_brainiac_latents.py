@@ -5,7 +5,8 @@ This script intentionally separates frozen representation extraction from the
 R MatFPCA analysis.  It follows the deterministic validation transform in the
 official BrainIAC repository:
 
-    LoadImaged -> EnsureChannelFirstd -> Resized(96^3, trilinear)
+    LoadImaged -> EnsureChannelFirstd -> fixed common foreground crop
+    -> Resized(96^3, trilinear)
     -> NormalizeIntensityd(nonzero=True, channel_wise=True) -> ToTensord
 
 BrainIAC uses ``monai.networks.nets.ViT`` with ``classification=False``.  There
@@ -39,9 +40,17 @@ from typing import Any, Iterable, Mapping, Sequence
 
 
 SCHEMA_VERSION = 1
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 MODEL_NAME = "BrainIAC"
 MODEL_ARCHITECTURE = "MONAI ViT-B/16^3 (3D, classification=False)"
+# These affine-registered ADNI inputs share one grid.  Use one common crop:
+# independently cropping each scan would move anatomy between token indices.
+SOURCE_IMAGE_SIZE = (193, 229, 193)
+FOREGROUND_ROI_START = (16, 16, 0)
+FOREGROUND_ROI_END = (177, 217, 177)  # Python-exclusive upper bounds.
+CROPPED_IMAGE_SIZE = tuple(
+    end - start for start, end in zip(FOREGROUND_ROI_START, FOREGROUND_ROI_END)
+)
 IMAGE_SIZE = (96, 96, 96)
 PATCH_SIZE = (16, 16, 16)
 PATCH_GRID = (6, 6, 6)
@@ -52,9 +61,10 @@ MLP_DIM = 3072
 NUM_HEADS = 12
 REPRESENTATION_TYPE = "3d_patch_token_by_feature"
 PREPROCESSING_DESCRIPTION = (
-    "MONAI LoadImaged; EnsureChannelFirstd; Resized spatial_size=(96,96,96) "
-    "mode=trilinear; NormalizeIntensityd nonzero=True channel_wise=True; "
-    "ToTensord"
+    "MONAI LoadImaged; EnsureChannelFirstd; fixed common SpatialCropd "
+    "roi_start=(16,16,0) roi_end=(177,217,177) on the affine-registered "
+    "193x229x193 grid; Resized spatial_size=(96,96,96) mode=trilinear; "
+    "NormalizeIntensityd nonzero=True channel_wise=True; ToTensord"
 )
 
 REQUIRED_MANIFEST_COLUMNS = {
@@ -636,6 +646,7 @@ def import_runtime() -> dict[str, Any]:
             LoadImaged,
             NormalizeIntensityd,
             Resized,
+            SpatialCropd,
             ToTensord,
         )
     except ImportError as error:
@@ -655,6 +666,7 @@ def import_runtime() -> dict[str, Any]:
         "LoadImaged": LoadImaged,
         "EnsureChannelFirstd": EnsureChannelFirstd,
         "Resized": Resized,
+        "SpatialCropd": SpatialCropd,
         "NormalizeIntensityd": NormalizeIntensityd,
         "ToTensord": ToTensord,
     }
@@ -851,6 +863,11 @@ def build_preprocessors(runtime: Mapping[str, Any]) -> tuple[Any, Any]:
         [
             runtime["LoadImaged"](keys=["image"]),
             runtime["EnsureChannelFirstd"](keys=["image"]),
+            runtime["SpatialCropd"](
+                keys=["image"],
+                roi_start=FOREGROUND_ROI_START,
+                roi_end=FOREGROUND_ROI_END,
+            ),
             runtime["Resized"](
                 keys=["image"], spatial_size=IMAGE_SIZE, mode="trilinear"
             ),
@@ -871,6 +888,15 @@ def preprocess_volume(
     path: Path, load_resize: Any, normalize: Any, runtime: Mapping[str, Any]
 ) -> Any:
     torch = runtime["torch"]
+    try:
+        source_shape = tuple(runtime["nibabel"].load(str(path)).shape[:3])
+    except Exception as error:
+        raise ExtractionError(f"Failed to inspect NIfTI geometry {path}: {error}") from error
+    if source_shape != SOURCE_IMAGE_SIZE:
+        raise ExtractionError(
+            f"Source {path} has spatial shape {source_shape}; the fixed common "
+            f"crop requires the registered grid {SOURCE_IMAGE_SIZE}."
+        )
     try:
         resized = load_resize({"image": str(path)})
     except Exception as error:
@@ -1140,6 +1166,10 @@ def run(args: argparse.Namespace) -> int:
         "model": {
             "name": MODEL_NAME,
             "architecture": MODEL_ARCHITECTURE,
+            "source_image_size": list(SOURCE_IMAGE_SIZE),
+            "foreground_roi_start": list(FOREGROUND_ROI_START),
+            "foreground_roi_end_exclusive": list(FOREGROUND_ROI_END),
+            "cropped_image_size": list(CROPPED_IMAGE_SIZE),
             "image_size": list(IMAGE_SIZE),
             "patch_size": list(PATCH_SIZE),
             "patch_grid": list(PATCH_GRID),

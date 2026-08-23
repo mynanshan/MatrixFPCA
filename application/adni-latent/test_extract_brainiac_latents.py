@@ -31,6 +31,18 @@ FIELDNAMES = [
 
 
 class CohortTests(unittest.TestCase):
+    def test_common_crop_geometry_is_fixed_and_inside_registered_grid(self) -> None:
+        self.assertEqual(extractor.SOURCE_IMAGE_SIZE, (193, 229, 193))
+        self.assertEqual(extractor.CROPPED_IMAGE_SIZE, (161, 201, 177))
+        self.assertTrue(all(
+            0 <= start < end <= size
+            for start, end, size in zip(
+                extractor.FOREGROUND_ROI_START,
+                extractor.FOREGROUND_ROI_END,
+                extractor.SOURCE_IMAGE_SIZE,
+            )
+        ))
+
     def test_command_line_default_uses_all_eligible_subjects(self) -> None:
         parser = extractor.build_argument_parser()
         options = parser.parse_args(["--manifest", "manifest.csv", "--nifti-dir", "nifti"])

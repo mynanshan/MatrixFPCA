@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
 # Fast source-level regression checks for the interpretation analysis. The full
-# script is integration-tested against the cached pilot outputs.
+# Full data dependencies are integration-tested by the reproducible main run.
 
 path <- file.path(
   "application", "adni-latent", "interpret_brainiac_matfpca.R"
