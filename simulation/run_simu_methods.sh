@@ -558,4 +558,4 @@ done
 
 echo "After completion:"
 echo "  sacct -j $(IFS=,; echo "${submitted_jobs[*]}") --units=M --format=JobID%24,State,ExitCode,Elapsed,TotalCPU,AllocCPUS,ReqMem,MaxRSS"
-echo "  Rscript simulation/summarize_simu_methods.R --results_dir ${RESULTS_DIR}"
+echo "  Rscript simulation/analyze_simu-methods.R --results_dir ${RESULTS_DIR} --profile ${profile} --study_version ${study_version}"

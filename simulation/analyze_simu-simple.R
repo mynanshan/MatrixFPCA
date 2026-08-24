@@ -35,7 +35,7 @@ parser$add_argument(
 parser$add_argument(
   "--y_scale", choices = c("log", "linear", "normal"), default = "log",
   help = paste(
-    "Y-axis scale for line/ribbon plots; normal is an alias for linear",
+    "Y-axis scale for violin plots; normal is an alias for linear",
     "(default: %(default)s)."
   )
 )
@@ -575,15 +575,7 @@ res[, weight_label := factor(
   levels = c("identity", "gaussian_refined"),
   labels = c("Identity", "Refined")
 )]
-reconstruction_plot_data <- reconstruction_summary[
-  nbasis == plot_nbasis & weight_folds == plot_weight_folds &
-    eigensystem == plot_eigensystem
-]
-reconstruction_plot_data[, weight_label := factor(
-  weight,
-  levels = c("identity", "gaussian_refined"),
-  labels = c("Identity", "Refined")
-)]
+reconstruction_plot_data <- res
 
 id_columns <- c(
   "seed", "n", "p", "q", "sig", "distr", "dependence",
@@ -609,8 +601,19 @@ metric_labels <- c(
 covariance_metric_labels <- unname(metric_labels[names(metric_labels) != "relmseX_raw"])
 dimension_metric_labels <- covariance_metric_labels
 # The preceding five-row dimension plots were 8.4 inches high.  This four-row
-# height preserves their 1.18632-inch inner panel height under the same margins.
-dimension_plot_height <- 7.01568
+# height first preserved their 1.18632-inch inner panel height under the same
+# margins, then was increased by 20% to make the panels slightly taller.
+dimension_outer_margins <- c(2.6, 1.2, 3.0, 2.2)
+dimension_plot_width <- 10.9984
+dimension_plot_height <- 8.181216
+# These dimensions give the two-row metric grids the same physical plot-region
+# size as each panel in the dimension grids.  This matches both panel aspect
+# ratios and the relative scale of plots, titles, axes, and annotations.  Both
+# sets of device dimensions account for the tighter outer margins, leaving the
+# physical panel sizes unchanged.
+metric_outer_margins <- c(2.2, 0.8, 2.8, 0.8)
+metric_plot_width <- 7.80187
+metric_plot_height <- 5.38161
 long[, metric := factor(
   metric_key,
   levels = names(metric_labels),
@@ -620,16 +623,6 @@ long[, metric := factor(
 # Uniform remains in the CSV summaries but is intentionally omitted from plots.
 long <- long[distr != "uniform"]
 setting_columns <- setdiff(id_columns, c("seed", "weight", "weight_label"))
-summary_data <- long[
-  ,
-  .(
-    median_error = median(error, na.rm = TRUE),
-    lower = quantile(error, probs = 0.025, na.rm = TRUE),
-    upper = quantile(error, probs = 0.975, na.rm = TRUE)
-  ),
-  by = c(setting_columns, "metric", "weight_label")
-]
-
 difference_id <- c("seed", setting_columns, "metric")
 difference_formula <- as.formula(paste(
   paste(difference_id, collapse = " + "), "~ weight"
@@ -638,7 +631,7 @@ difference_data <- dcast(long, difference_formula, value.var = "error")
 difference_data[, difference := identity - gaussian_refined]
 
 method_colors <- c(Identity = "#F8766D", Refined = "#00BFC4")
-method_fills <- grDevices::adjustcolor(method_colors, alpha.f = 0.16)
+method_fills <- grDevices::adjustcolor(method_colors, alpha.f = 0.42)
 names(method_fills) <- names(method_colors)
 
 pretty_log_ticks <- function(limits) {
@@ -667,48 +660,80 @@ panel_limits <- function(values, y_scale, description) {
   limits + c(-padding, padding)
 }
 
-mean_panel_limits <- function(data, y_scale = requested_y_scale) {
+violin_panel_limits <- function(
+  data, value_var = "error", y_scale = requested_y_scale,
+  description = "estimation-error distribution"
+) {
   panel_limits(
-    c(data$lower, data$upper), y_scale,
-    "median-error confidence-band"
+    data[[value_var]], y_scale, description
   )
 }
 
-draw_mean_panel <- function(
-  data, x_var, show_x = FALSE, show_y = TRUE, ylim = NULL,
-  y_scale = requested_y_scale
+ordered_x_values <- function(data, x_var) {
+  values <- data[[x_var]]
+  values <- values[!is.na(values)]
+  if (is.factor(values)) {
+    return(levels(droplevels(values)))
+  }
+  if (is.numeric(values)) return(sort(unique(values)))
+  sort(unique(as.character(values)))
+}
+
+draw_split_violin_panel <- function(
+  data, x_var, value_var = "error", show_x = FALSE, show_y = TRUE,
+  ylim = NULL, y_scale = requested_y_scale
 ) {
-  x <- sort(unique(data[[x_var]]))
-  if (is.null(ylim)) ylim <- mean_panel_limits(data, y_scale)
-  x_limits <- range(x)
-  x_padding <- if (length(x) > 1L) 0.5 * min(diff(x)) else 0.5
-  x_limits <- x_limits + c(-x_padding, x_padding)
+  x <- ordered_x_values(data, x_var)
+  if (is.null(ylim)) ylim <- violin_panel_limits(data, value_var, y_scale)
   plot(
-    NA, xlim = x_limits, ylim = ylim,
+    NA, xlim = c(0.5, length(x) + 0.5), ylim = ylim,
     log = if (y_scale == "log") "y" else "",
     axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
   )
   grid(col = "grey90", lty = 1)
-  for (method in levels(data$weight_label)) {
-    values <- data[weight_label == method][order(get(x_var))]
-    polygon(
-      c(values[[x_var]], rev(values[[x_var]])),
-      c(values$lower, rev(values$upper)),
-      border = NA, col = method_fills[[method]]
-    )
-    lines(
-      values[[x_var]], values$median_error,
-      col = method_colors[[method]], lwd = 1.6
-    )
-    points(
-      values[[x_var]], values$median_error,
-      col = method_colors[[method]], pch = 16, cex = 0.9
-    )
+  side <- c(Identity = -1, Refined = 1)
+  for (x_index in seq_along(x)) {
+    for (method in names(side)) {
+      method_name <- method
+      values <- data[
+        as.character(get(x_var)) == as.character(x[[x_index]]) &
+          weight_label == method_name,
+        get(value_var)
+      ]
+      values <- values[is.finite(values)]
+      if (y_scale == "log") values <- values[values > 0]
+      if (!length(values)) next
+
+      density_values <- if (y_scale == "log") log10(values) else values
+      if (length(unique(density_values)) > 1L) {
+        estimate <- density(density_values, cut = 0, n = 256)
+        violin_width <- c(0, 0.42 * estimate$y / max(estimate$y), 0)
+        violin_y <- c(
+          estimate$x[[1L]], estimate$x, estimate$x[[length(estimate$x)]]
+        )
+        if (y_scale == "log") violin_y <- 10^violin_y
+        polygon(
+          x_index + side[[method]] * violin_width, violin_y,
+          col = method_fills[[method]], border = method_colors[[method]],
+          lwd = 0.9
+        )
+      } else {
+        points(
+          x_index + 0.18 * side[[method]], values[[1L]],
+          pch = 16, col = method_colors[[method]], cex = 0.75
+        )
+      }
+      median_value <- median(values)
+      segments(
+        x_index, median_value, x_index + 0.30 * side[[method]], median_value,
+        col = method_colors[[method]], lwd = 1.7
+      )
+    }
   }
   box(col = "grey30")
   if (show_x) {
     axis(
-      1, at = x, labels = format(x, trim = TRUE),
+      1, at = seq_along(x), labels = format(x, trim = TRUE),
       cex.axis = 0.92, gap.axis = -1
     )
   }
@@ -726,8 +751,10 @@ draw_mean_panel <- function(
 }
 
 draw_difference_panel <- function(data, x_var, show_x = FALSE, show_y = TRUE) {
-  x <- sort(unique(data[[x_var]]))
-  groups <- lapply(x, function(value) data[get(x_var) == value, difference])
+  x <- ordered_x_values(data, x_var)
+  groups <- lapply(x, function(value) {
+    data[as.character(get(x_var)) == as.character(value), difference]
+  })
   boxplot_stats <- boxplot(groups, plot = FALSE)
   ylim <- range(c(0, boxplot_stats$stats), finite = TRUE)
   padding <- max(diff(ylim) * 0.06, .Machine$double.eps)
@@ -775,7 +802,8 @@ plot_region_device_coordinates <- function() {
 
 add_outer_annotations <- function(
   x_label, row_labels = NULL, row_y = NULL,
-  x_label_y = 0.018, row_label_x = 0.992
+  x_label_y = 0.018, row_label_x = 0.992, annotation_x = 0.5,
+  legend_y = 0.97, x_label_cex = 1.15
 ) {
   par(
     fig = c(0, 1, 0, 1), mar = rep(0, 4), oma = rep(0, 4),
@@ -787,11 +815,12 @@ add_outer_annotations <- function(
     xaxs = "i", yaxs = "i"
   )
   legend(
-    "top", legend = names(method_colors), col = method_colors,
-    lty = 1, lwd = 2, pch = 16, pt.cex = 0.9,
-    horiz = TRUE, bty = "n", cex = 1.05, inset = 0.03
+    x = annotation_x, y = legend_y,
+    legend = names(method_colors), fill = method_fills,
+    border = method_colors,
+    horiz = TRUE, bty = "n", cex = 1.15, xjust = 0.5, yjust = 1
   )
-  text(0.5, x_label_y, x_label, cex = 1.05)
+  text(annotation_x, x_label_y, x_label, cex = x_label_cex)
   if (!is.null(row_labels)) {
     if (is.null(row_y)) {
       panel_top <- 0.88
@@ -802,7 +831,7 @@ add_outer_annotations <- function(
     }
     text(
       row_label_x, row_y, row_labels,
-      srt = -90, adj = 0.5, cex = 1.02
+      srt = -90, adj = 0.5, cex = 1.10
     )
   }
 }
@@ -823,13 +852,13 @@ equal_plot_row_heights <- function(
 }
 
 plot_condition_grid <- function(
-  means, differences, condition_var, condition_values, condition_labels,
+  distributions, differences, condition_var, condition_values, condition_labels,
   x_var, x_label, filename, metrics = dimension_metric_labels,
-  width = 11.5, height = dimension_plot_height
+  width = dimension_plot_width, height = dimension_plot_height
 ) {
   nrow <- length(metrics)
   ncol <- 2L * length(condition_values)
-  outer_margins <- c(3.2, 2.8, 4.2, 4.4)
+  outer_margins <- dimension_outer_margins
   bottom_margins <- c(rep(0.9, nrow - 1L), 2.8)
   top_margins <- c(2.5, rep(0.6, nrow - 1L))
   pdf(file.path(output_dir, filename), width = width, height = height)
@@ -844,17 +873,20 @@ plot_condition_grid <- function(
   )
   layout(panel_layout, heights = row_heights)
   row_centers <- numeric(nrow)
+  chart_left <- NA_real_
   chart_bottom <- NA_real_
   chart_right <- NA_real_
   for (row in seq_along(metrics)) {
-    row_mean_data <- means[
+    row_distribution_data <- distributions[
       metric == metrics[[row]] & get(condition_var) %in% condition_values
     ]
-    shared_mean_ylim <- mean_panel_limits(row_mean_data, requested_y_scale)
+    shared_violin_ylim <- violin_panel_limits(
+      row_distribution_data, y_scale = requested_y_scale
+    )
     for (condition_index in seq_along(condition_values)) {
       condition_value <- condition_values[[condition_index]]
       condition_label <- condition_labels[[condition_index]]
-      mean_subset <- means[
+      distribution_subset <- distributions[
         metric == metrics[[row]] & get(condition_var) == condition_value
       ]
       difference_subset <- differences[
@@ -862,39 +894,43 @@ plot_condition_grid <- function(
       ]
       bottom <- row == nrow
       par(mar = c(if (bottom) 2.8 else 0.9, 3.2, if (row == 1L) 2.5 else 0.6, 0.5))
-      draw_mean_panel(
-        mean_subset, x_var, show_x = bottom, show_y = TRUE,
-        ylim = shared_mean_ylim
+      draw_split_violin_panel(
+        distribution_subset, x_var, show_x = bottom, show_y = TRUE,
+        ylim = shared_violin_ylim
       )
       if (condition_index == 1L) {
         panel_coordinates <- plot_region_device_coordinates()
+        if (row == 1L) chart_left <- panel_coordinates[[1L]]
         row_centers[[row]] <- mean(panel_coordinates[3L:4L])
         if (bottom) chart_bottom <- panel_coordinates[[3L]]
       }
-      if (row == 1L) title(main = paste(condition_label, "Median error", sep = "\n"), cex.main = 0.96)
+      if (row == 1L) title(main = paste(condition_label, "Error distribution", sep = "\n"), cex.main = 1.08)
 
       par(mar = c(if (bottom) 2.8 else 0.9, 3.2, if (row == 1L) 2.5 else 0.6, 0.5))
       draw_difference_panel(difference_subset, x_var, show_x = bottom, show_y = TRUE)
       if (condition_index == length(condition_values)) {
         chart_right <- plot_region_device_coordinates()[[2L]]
       }
-      if (row == 1L) title(main = paste(condition_label, "Identity - Refined", sep = "\n"), cex.main = 0.96)
+      if (row == 1L) title(main = paste(condition_label, "Identity - Refined", sep = "\n"), cex.main = 1.08)
     }
   }
   line_height <- par("csi") * par("mex")
   add_outer_annotations(
     x_label, metrics, row_y = row_centers,
     x_label_y = chart_bottom - 3.1 * line_height / par("din")[[2L]],
-    row_label_x = chart_right + line_height / par("din")[[1L]]
+    row_label_x = chart_right + line_height / par("din")[[1L]],
+    annotation_x = mean(c(chart_left, chart_right)),
+    legend_y = 0.99, x_label_cex = 1.40
   )
 }
 
 plot_metric_grid <- function(
-  means, differences, x_var, x_label, filename, width = 8.6, height = 6.4,
-  categorical_x = FALSE, metrics = covariance_metric_labels
+  distributions, differences, x_var, x_label, filename,
+  width = metric_plot_width, height = metric_plot_height,
+  metrics = covariance_metric_labels
 ) {
   nrow <- 2L
-  outer_margins <- c(3.2, 1.8, 4.2, 1.2)
+  outer_margins <- metric_outer_margins
   bottom_margins <- c(0.9, 2.8)
   top_margins <- rep(2.6, nrow)
   pdf(file.path(output_dir, filename), width = width, height = height)
@@ -908,59 +944,47 @@ plot_metric_grid <- function(
     height, outer_margins, bottom_margins, top_margins
   )
   layout(panel_layout, heights = row_heights)
+  chart_left <- NA_real_
+  chart_right <- NA_real_
+  chart_bottom <- NA_real_
   for (index in seq_along(metrics)) {
     row <- if (index <= 2L) 1L else 2L
     bottom <- row == 2L
     metric_name <- metrics[[index]]
-    mean_subset <- means[metric == metric_name]
+    distribution_subset <- distributions[metric == metric_name]
     difference_subset <- differences[metric == metric_name]
-    if (categorical_x) {
-      levels_x <- if (is.factor(mean_subset[[x_var]])) {
-        levels(droplevels(mean_subset[[x_var]]))
-      } else {
-        unique(as.character(mean_subset[[x_var]]))
-      }
-      mean_subset[, plot_x := match(as.character(get(x_var)), levels_x)]
-      difference_subset[, plot_x := match(as.character(get(x_var)), levels_x)]
-      panel_x_var <- "plot_x"
-    } else {
-      levels_x <- NULL
-      panel_x_var <- x_var
-    }
 
     par(mar = c(if (bottom) 2.8 else 0.9, 3.2, 2.6, 0.5))
-    draw_mean_panel(
-      mean_subset, panel_x_var,
-      show_x = bottom && !categorical_x, show_y = TRUE
+    draw_split_violin_panel(
+      distribution_subset, x_var,
+      show_x = bottom, show_y = TRUE
     )
-    title(main = paste(metric_name, "Median error", sep = "\n"), cex.main = 0.96)
-    if (bottom && categorical_x) {
-      axis(
-        1, at = seq_along(levels_x), labels = levels_x,
-        cex.axis = 0.9, gap.axis = -1
-      )
-    }
+    panel_coordinates <- plot_region_device_coordinates()
+    if (index == 1L) chart_left <- panel_coordinates[[1L]]
+    if (index == 3L) chart_bottom <- panel_coordinates[[3L]]
+    title(main = paste(metric_name, "Error distribution", sep = "\n"), cex.main = 1.08)
 
     par(mar = c(if (bottom) 2.8 else 0.9, 3.2, 2.6, 0.5))
     draw_difference_panel(
-      difference_subset, panel_x_var,
-      show_x = bottom && !categorical_x, show_y = TRUE
+      difference_subset, x_var,
+      show_x = bottom, show_y = TRUE
     )
-    title(main = "Identity - Refined", cex.main = 0.96)
-    if (bottom && categorical_x) {
-      axis(
-        1, at = seq_along(levels_x), labels = levels_x,
-        cex.axis = 0.9, gap.axis = -1
-      )
+    if (index == length(metrics)) {
+      chart_right <- plot_region_device_coordinates()[[2L]]
     }
+    title(main = "Identity - Refined", cex.main = 1.08)
   }
-  add_outer_annotations(x_label)
+  add_outer_annotations(
+    x_label,
+    x_label_y = chart_bottom - 0.41 / par("din")[[2L]],
+    annotation_x = mean(c(chart_left, chart_right))
+  )
 }
 
 reconstruction_panel_limits <- function(data, y_scale = requested_y_scale) {
-  panel_limits(
-    c(data$mean_subject_q025, data$mean_subject_q975), y_scale,
-    "subject-specific reconstruction"
+  violin_panel_limits(
+    data, "relsseX_subject_median_raw", y_scale,
+    "run-specific subject-median reconstruction errors"
   )
 }
 
@@ -968,68 +992,10 @@ draw_reconstruction_panel <- function(
   data, x_var, show_y = TRUE, ylim = NULL,
   y_scale = requested_y_scale
 ) {
-  x <- sort(unique(data[[x_var]]))
-  if (is.null(ylim)) ylim <- reconstruction_panel_limits(data, y_scale)
-  x_limits <- range(x)
-  x_step <- if (length(x) > 1L) min(diff(x)) else 1
-  x_limits <- x_limits + c(-0.5, 0.5) * x_step
-  plot(
-    NA, xlim = x_limits, ylim = ylim,
-    log = if (y_scale == "log") "y" else "",
-    axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i"
+  draw_split_violin_panel(
+    data, x_var, value_var = "relsseX_subject_median_raw",
+    show_x = TRUE, show_y = show_y, ylim = ylim, y_scale = y_scale
   )
-  grid(col = "grey90", lty = 1)
-  for (method in levels(data$weight_label)) {
-    values <- data[weight_label == method][order(get(x_var))]
-    if (!nrow(values)) next
-    polygon(
-      c(values[[x_var]], rev(values[[x_var]])),
-      c(values$mean_subject_q025, rev(values$mean_subject_q975)),
-      border = NA, col = method_fills[[method]]
-    )
-    lines(
-      values[[x_var]], values$mean_subject_median,
-      col = method_colors[[method]], lwd = 1.8
-    )
-    # Compact error bars show uncertainty across independent simulation runs;
-    # the much wider ribbon shows heterogeneity across subjects within a run.
-    cap_width <- 0.05 * x_step
-    segments(
-      values[[x_var]], values$median_mc_lower,
-      values[[x_var]], values$median_mc_upper,
-      col = method_colors[[method]], lwd = 1.1
-    )
-    segments(
-      values[[x_var]] - cap_width, values$median_mc_lower,
-      values[[x_var]] + cap_width, values$median_mc_lower,
-      col = method_colors[[method]], lwd = 1.1
-    )
-    segments(
-      values[[x_var]] - cap_width, values$median_mc_upper,
-      values[[x_var]] + cap_width, values$median_mc_upper,
-      col = method_colors[[method]], lwd = 1.1
-    )
-    points(
-      values[[x_var]], values$mean_subject_median,
-      col = method_colors[[method]], pch = 16, cex = 0.9
-    )
-  }
-  box(col = "grey30")
-  axis(
-    1, at = x, labels = format(x, trim = TRUE),
-    cex.axis = 0.92, gap.axis = -1
-  )
-  if (show_y) {
-    if (y_scale == "log") {
-      ticks <- pretty_log_ticks(ylim)
-      axis(
-        2, at = ticks, labels = format(ticks, scientific = TRUE),
-        las = 1, cex.axis = 0.88
-      )
-    } else {
-      axis(2, las = 1, cex.axis = 0.88)
-    }
-  }
 }
 
 add_reconstruction_annotations <- function(x_label) {
@@ -1040,26 +1006,21 @@ add_reconstruction_annotations <- function(x_label) {
   plot.new()
   plot.window(xlim = c(0, 1), ylim = c(0, 1), xaxs = "i", yaxs = "i")
   legend(
-    "top", legend = names(method_colors), col = method_colors,
-    lty = 1, lwd = 2, pch = 16, pt.cex = 0.9,
+    "top", legend = names(method_colors), fill = method_fills,
+    border = method_colors,
     horiz = TRUE, bty = "n", cex = 1.02, inset = 0.015
   )
   text(0.5, 0.064, x_label, cex = 1.02)
   text(
-    0.014, 0.5, expression("Subject-specific relative SSE"),
+    0.014, 0.5, expression("Run-specific median subject relative SSE"),
     srt = 90, adj = 0.5, cex = 1.02
   )
   text(
     0.5, 0.027,
     paste(
-      "Line/ribbon: means of run-specific medians and",
-      "2.5%-97.5% subject quantiles"
+      "Split violins: distribution across simulation runs;",
+      "horizontal lines: medians"
     ),
-    cex = 0.64, col = "grey30"
-  )
-  text(
-    0.5, 0.010,
-    "Bars: 95% Monte Carlo CI for the mean of run-specific medians",
     cex = 0.64, col = "grey30"
   )
 }
@@ -1090,14 +1051,14 @@ plot_reconstruction_grid <- function(
 }
 
 dimension_grid <- c(20, 50, 100, 150, 200)
-dimension_means <- summary_data[
+dimension_distributions <- long[
   n == 50 & sig == 0.1 & dependence == "independent" & p %in% dimension_grid
 ]
 dimension_differences <- difference_data[
   n == 50 & sig == 0.1 & dependence == "independent" & p %in% dimension_grid
 ]
 plot_condition_grid(
-  dimension_means, dimension_differences,
+  dimension_distributions, dimension_differences,
   "distr", c("normal", "beta32", "t5"), c("Gaussian", "Beta(3,2)", "t(5)"),
   "p", "Spatial dimension (p = q)",
   "error_vs_dimension_n50_sig0p1_independent.pdf"
@@ -1115,7 +1076,7 @@ plot_reconstruction_grid(
   "reconstruction_vs_dimension_n50_sig0p1_independent.pdf"
 )
 
-dependent_means <- summary_data[
+dependent_distributions <- long[
   n == 50 & sig == 0.1 & distr == "normal" & dependence != "independent" &
     p %in% dimension_grid
 ]
@@ -1124,7 +1085,7 @@ dependent_differences <- difference_data[
     p %in% dimension_grid
 ]
 plot_condition_grid(
-  dependent_means, dependent_differences,
+  dependent_distributions, dependent_differences,
   "dependence",
   c("common_amplitude", "common_signed", "heavy_amplitude"),
   c("Common amplitude", "Common signed", "Heavy amplitude"),
@@ -1145,14 +1106,14 @@ plot_reconstruction_grid(
   "reconstruction_vs_dimension_dependent_n50_sig0p1_normal.pdf"
 )
 
-sample_means <- summary_data[
+sample_distributions <- long[
   p == 30 & sig == 0.1 & distr == "normal" & dependence == "independent"
 ]
 sample_differences <- difference_data[
   p == 30 & sig == 0.1 & distr == "normal" & dependence == "independent"
 ]
 plot_metric_grid(
-  sample_means, sample_differences, "n", "Number of subjects",
+  sample_distributions, sample_differences, "n", "Number of subjects",
   "error_vs_sample_size_p30_sig0p1_normal_independent.pdf"
 )
 
@@ -1166,14 +1127,14 @@ plot_reconstruction_grid(
   "reconstruction_vs_sample_size_p30_sig0p1_normal_independent.pdf"
 )
 
-noise_means <- summary_data[
+noise_distributions <- long[
   n == 50 & p == 30 & distr == "normal" & dependence == "independent"
 ]
 noise_differences <- difference_data[
   n == 50 & p == 30 & distr == "normal" & dependence == "independent"
 ]
 plot_metric_grid(
-  noise_means, noise_differences, "sig", "Noise standard deviation",
+  noise_distributions, noise_differences, "sig", "Noise standard deviation",
   "error_vs_noise_n50_p30_normal_independent.pdf"
 )
 
@@ -1188,7 +1149,7 @@ plot_reconstruction_grid(
 )
 
 cat("Base-graphics figures written to", output_dir, "\n")
-cat("Line/ribbon plots use a", requested_y_scale, "y scale.\n")
+cat("Split-violin plots use a", requested_y_scale, "y scale.\n")
 cat("Read", length(files), "files and", n_method_rows, "method rows.\n")
 cat(
   "Expected", nrow(expected_runs), "seed/config runs across",

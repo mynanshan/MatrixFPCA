@@ -4,8 +4,8 @@ suppressPackageStartupMessages(library(data.table))
 
 parser <- argparse::ArgumentParser(
   description = paste(
-    "Audit method-comparison simulations and create complete accuracy,",
-    "runtime, and completion tables."
+    "Audit and summarize method-comparison simulations, write complete",
+    "accuracy/runtime/completion tables, and print publication-style tables."
   )
 )
 parser$add_argument(
@@ -33,6 +33,28 @@ parser$add_argument(
   help = "Digits after the decimal in formatted accuracy tables (default: %(default)s)."
 )
 parser$add_argument(
+  "--runtime_digits", type = "integer", default = 2L,
+  help = "Digits after the decimal for formatted runtimes (default: %(default)s)."
+)
+parser$add_argument(
+  "--metrics",
+  default = paste(c("rel_hs_cov", "excess_rel_hs_cov", "sin2", "runtime"),
+                  collapse = ","),
+  help = paste(
+    "Comma-separated metrics to print: rel_hs_cov, oracle_rank_rel_hs,",
+    "excess_rel_hs_cov, sin2, eigenvalue_sse, runtime, or all",
+    "(default: %(default)s)."
+  )
+)
+parser$add_argument(
+  "--scenarios", default = NULL,
+  help = "Optional comma-separated scenario IDs or labels to print."
+)
+parser$add_argument(
+  "--quiet", action = "store_true",
+  help = "Write all output files but do not print scenario comparison tables."
+)
+parser$add_argument(
   "--fail_on_incomplete", action = "store_true",
   help = "Exit with status 1 after writing outputs if any expected fit is missing or failed."
 )
@@ -44,8 +66,11 @@ if (!grepl("^[A-Za-z0-9][A-Za-z0-9_-]*$", args$study_version)) {
 if (!dir.exists(args$results_dir)) {
   stop("Results directory does not exist: ", args$results_dir)
 }
-if (args$digits < 1L || args$digits > 10L) {
-  stop("--digits must be between 1 and 10.")
+if (args$digits < 0L || args$digits > 10L) {
+  stop("--digits must be between 0 and 10.")
+}
+if (args$runtime_digits < 0L || args$runtime_digits > 10L) {
+  stop("--runtime_digits must be between 0 and 10.")
 }
 expected_repetitions <- if (is.null(args$expected_repetitions)) {
   if (args$profile == "pilot") 3L else 100L
@@ -424,7 +449,11 @@ metric_summary <- successful_results[
     mean_runtime = mean_or_na(runtime),
     sd_runtime = sd_or_na(runtime),
     median_runtime = median_or_na(runtime),
-    max_runtime = if (all(is.na(runtime))) NA_real_ else max(runtime, na.rm = TRUE)
+    max_runtime = if (all(is.na(runtime))) NA_real_ else max(runtime, na.rm = TRUE),
+    mean_selected_spaco_score_ridge = mean_or_na(spaco_selected_score_ridge),
+    median_selected_spaco_score_ridge = median_or_na(
+      spaco_selected_score_ridge
+    )
   ),
   by = .(scenario_order, parsed_scenario, scenario_label, method_order,
          method, method_label)
@@ -479,7 +508,9 @@ publication_table <- comparison[, .(
   relative_eigenvalue_sse = format_mean_sd(
     mean_rel_eigenvalue_sse, sd_rel_eigenvalue_sse
   ),
-  runtime_seconds = format_mean_sd(mean_runtime, sd_runtime, digits = 2L),
+  runtime_seconds = format_mean_sd(
+    mean_runtime, sd_runtime, digits = args$runtime_digits
+  ),
   successful_seeds = paste0(successful, "/", expected)
 )]
 
@@ -555,12 +586,95 @@ fwrite(comparison, file.path(args$output_dir, "method_comparison_complete.csv"))
 fwrite(publication_table, file.path(args$output_dir, "method_comparison_formatted.csv"))
 fwrite(primary_wide, file.path(args$output_dir, "relative_hs_error_wide.csv"))
 
+options(width = max(getOption("width"), 200L))
 print(completion_overview)
 if (nrow(method_failures)) {
   cat("\nMethod-level failures:\n")
   print(method_failures[, .(scenario, seed, method_label, observed_status, error)])
 }
 cat("\nWrote audit and comparison tables to ", args$output_dir, "\n", sep = "")
+
+# Generate console tables from the same in-memory comparison used for the CSV
+# outputs so the two representations cannot drift apart.
+split_argument <- function(value) {
+  if (is.null(value) || !nzchar(trimws(value))) return(character())
+  unique(trimws(strsplit(value, ",", fixed = TRUE)[[1L]]))
+}
+metric_definitions <- data.table(
+  metric = c(
+    "rel_hs_cov", "oracle_rank_rel_hs", "excess_rel_hs_cov", "sin2",
+    "eigenvalue_sse", "runtime"
+  ),
+  mean_column = c(
+    "mean_rel_hs_cov", "mean_oracle_rank_rel_hs",
+    "mean_excess_rel_hs_cov", "mean_sin2", "mean_rel_eigenvalue_sse",
+    "mean_runtime"
+  ),
+  sd_column = c(
+    "sd_rel_hs_cov", "sd_oracle_rank_rel_hs", "sd_excess_rel_hs_cov",
+    "sd_mean_sin2", "sd_rel_eigenvalue_sse", "sd_runtime"
+  ),
+  label = c(
+    "Relative HS error", "Oracle-rank error", "Excess relative HS",
+    "Mean sin^2 angle", "Relative eigenvalue SSE", "Runtime (s)"
+  )
+)
+requested_metrics <- split_argument(args$metrics)
+if (identical(requested_metrics, "all")) {
+  requested_metrics <- metric_definitions$metric
+}
+unknown_metrics <- setdiff(requested_metrics, metric_definitions$metric)
+if (length(unknown_metrics)) {
+  stop("Unknown metric(s): ", paste(unknown_metrics, collapse = ", "))
+}
+if (!length(requested_metrics)) stop("At least one metric must be requested.")
+metric_definitions <- metric_definitions[match(requested_metrics, metric)]
+
+printed_comparison <- comparison
+requested_scenarios <- split_argument(args$scenarios)
+if (length(requested_scenarios)) {
+  unknown_scenarios <- setdiff(
+    requested_scenarios,
+    c(unique(comparison$scenario), unique(comparison$scenario_label))
+  )
+  if (length(unknown_scenarios)) {
+    stop("Unknown scenario(s): ", paste(unknown_scenarios, collapse = ", "))
+  }
+  printed_comparison <- comparison[
+    scenario %in% requested_scenarios | scenario_label %in% requested_scenarios
+  ]
+}
+
+if (!isTRUE(args$quiet)) {
+  for (scenario_id in unique(printed_comparison$scenario)) {
+    section <- printed_comparison[scenario == scenario_id]
+    output <- section[, .(
+      Method = method_label,
+      Successful = paste0(successful, "/", expected)
+    )]
+    for (metric_index in seq_len(nrow(metric_definitions))) {
+      definition <- metric_definitions[metric_index]
+      metric_digits <- if (definition$metric == "runtime") {
+        args$runtime_digits
+      } else {
+        args$digits
+      }
+      output[, (definition$label) := format_mean_sd(
+        section[[definition$mean_column]],
+        section[[definition$sd_column]],
+        metric_digits
+      )]
+    }
+    setcolorder(output, c("Method", metric_definitions$label, "Successful"))
+    cat("\n", section$scenario_label[[1L]], " [", scenario_id, "]\n", sep = "")
+    print(output, row.names = FALSE)
+  }
+  cat(
+    "\nEntries are Monte Carlo mean (SD) over successful fits; -- denotes ",
+    "an unavailable metric.\n",
+    sep = ""
+  )
+}
 
 if (isTRUE(args$fail_on_incomplete) && !completion_overview$complete) {
   quit(save = "no", status = 1L)

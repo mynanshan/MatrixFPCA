@@ -216,7 +216,7 @@ module load r/4.5.0
 Rscript simulation/competitors/install-dependencies.R
 simulation/run_simu_methods.sh 3 1 20 --profile pilot --dry-run
 simulation/run_simu_methods.sh 100 1 40 --profile main --no-overwrite
-Rscript simulation/summarize_simu_methods.R
+Rscript simulation/analyze_simu-methods.R
 ```
 
 The profiles are `pilot` for $8\times8$ calibration, `scaling` for baseline dimensions $8,16,32$, and `main` for dimension, sample-size, visit-density, noise, spectrum, heavy-tail, and score-dependence settings. The obsolete $4\times4$ scenario has been removed. Eligibility is now common except for the structurally quadratic mFACEs estimator:
@@ -242,22 +242,22 @@ The original conservative `fast`, `medium`, `parallel`, and `slow` allocations r
 
 HAPP jobs use process workers with one BLAS thread each. Shi and mFACEs use one R process with threaded BLAS/OpenMP, avoiding nested oversubscription. A timeout records `timeout` in its `.status` file and can be retried with `--no-overwrite`, which skips only scheduler tasks marked `ok`. Method-level errors are recorded in result CSV rows and must also be checked; a scheduler task can complete even when its individual method returns an error row. The default `v3` study tag prevents results from the earlier rank-8 configuration from being skipped or overwritten accidentally.
 
-`summarize_simu_methods.R` combines accuracy and runtime results and audits retained manifests/status files into `scheduler-status.csv`. Memory and Slurm time can be adjusted without editing the launcher through its `MATFPCA_MEM_*` and `MATFPCA_TIME_*` environment variables; the common fit cutoff is controlled by `MATFPCA_METHOD_TIMEOUT`.
+Memory and Slurm time can be adjusted without editing the launcher through its `MATFPCA_MEM_*` and `MATFPCA_TIME_*` environment variables; the common fit cutoff is controlled by `MATFPCA_METHOD_TIMEOUT`.
 
-For the complete paper-style comparison and a strict expected-run audit, use:
+For the complete paper-style comparison and strict expected-run audit, use the
+single analysis pipeline:
 
 ```bash
-Rscript simulation/analyze_simu_methods.R
-Rscript simulation/print_simu_method_tables.R
+Rscript simulation/analyze_simu-methods.R
 ```
 
 By default this checks the 100-seed `main` design encoded by the launcher and
 writes machine-readable audit files, a complete long-form metric table, a wide
-relative-Hilbert--Schmidt-error table under `simulation/summary-methods/`.
-`print_simu_method_tables.R` reads the complete numeric table and prints the
-current scenario tables to the console, avoiding a second static copy of the
-results. Use `--metrics all` to include every summarized accuracy metric, or
-`--scenarios dim_p8,n100_p8` to print a subset. Method-level failures are
+relative-Hilbert--Schmidt-error table under `simulation/summary-methods/`, and
+prints the current scenario tables to the console. Use `--metrics all` to
+include every summarized accuracy metric, `--scenarios dim_p8,n100_p8` to
+print a subset, or `--quiet` to write files without printing scenario tables.
+Method-level failures are
 counted separately from missing result files and scheduler failures; failed
 fits are shown in the completion columns but excluded from metric means. Pass `--fail_on_incomplete`
 in automated checks when any missing or failed expected fit should produce a
