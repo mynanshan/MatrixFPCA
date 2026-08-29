@@ -157,3 +157,12 @@ print_latex_result_table <- function(title, table) {
   }
   invisible(table)
 }
+
+write_latex_result_table <- function(table, path) {
+  if (is.null(table)) {
+    stop("Cannot write an empty LaTeX table.", call. = FALSE)
+  }
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  writeLines(as.character(table), con = path, useBytes = TRUE)
+  invisible(normalizePath(path, mustWork = TRUE))
+}

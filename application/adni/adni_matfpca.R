@@ -538,7 +538,7 @@ mat_data <- create_matrix_funcdata_irreg(
 )
 
 configuration_signature <- paste(
-  "adni_pipeline_v3_masked_highres",
+  "adni_pipeline_v5_full_spatial_min_temporal_rank2",
   manifest_hash,
   paste(meta$image_id, meta$time_tick, sep = ":", collapse = ","),
   paste(meta$image_id[meta$split == "test"], collapse = ","),
@@ -555,12 +555,6 @@ if (args$cache && file.exists(fit_cache)) {
     analysis_fit <- candidate
     log_message("Reusing MatFPCA fit cache: ", fit_cache)
   }
-}
-
-rank_for_pve <- function(values, pve) {
-  values <- pmax(as.numeric(values), 0)
-  if (!length(values) || sum(values) <= 0) stop("Non-positive marginal eigensystem.")
-  which(cumsum(values) / sum(values) >= pve)[[1L]]
 }
 
 if (is.null(analysis_fit)) {
@@ -595,15 +589,29 @@ if (is.null(analysis_fit)) {
     )
   })
   eig_full <- eigen.matfcov(covariance_fit$C)
-  ranks <- c(
-    row = rank_for_pve(eig_full$values$lam_phi, args$mode_pve),
-    column = rank_for_pve(eig_full$values$lam_psi, args$mode_pve),
-    time = rank_for_pve(eig_full$values$lam_theta, args$mode_pve)
-  )
   eig <- trunc.matfeigen(
     eig_full,
-    I = ranks[["row"]], J = ranks[["column"]], K = ranks[["time"]],
+    pve = args$mode_pve,
+    pve_rule = "temporal",
     verbose = FALSE
+  )
+  if (ncol(eig_full$funcs$Theta) < 2L) {
+    stop("ADNI presentation requires at least two temporal modes.")
+  }
+  temporal_rank <- max(2L, ncol(eig$funcs$Theta))
+  if (ncol(eig$funcs$Theta) < temporal_rank) {
+    eig <- trunc.matfeigen(
+      eig_full,
+      I = ncol(eig_full$funcs$Phi),
+      J = ncol(eig_full$funcs$Psi),
+      K = temporal_rank,
+      verbose = FALSE
+    )
+  }
+  ranks <- c(
+    row = ncol(eig$funcs$Phi),
+    column = ncol(eig$funcs$Psi),
+    time = ncol(eig$funcs$Theta)
   )
   log_message(
     "Estimating subject scores at retained ranks ",
@@ -631,10 +639,10 @@ eig <- analysis_fit$eig
 scores <- analysis_fit$scores
 ranks <- analysis_fit$ranks
 
-# The retained eigensystem can contain only one temporal mode when that mode
-# clears the marginal PVE threshold. Recover the full spatial eigensystem for
-# product-rank diagnostics. The temporal diagnostic below uses quadrature
-# weights because the compact ADNI grid is irregular rather than equally spaced.
+# The retained eigensystem contains the complete spatial bases and at least two
+# temporal modes, even when one mode clears the marginal PVE threshold. The
+# temporal diagnostic below uses quadrature weights because the compact ADNI
+# grid is irregular rather than equally spaced.
 eig_full <- eigen.matfcov(covariance_fit$C)
 
 trapezoid_weights <- function(grid) {
@@ -1035,10 +1043,22 @@ setnames(
 
 write_image_panel <- function(z, palette, zlim = range(z, finite = TRUE), main = "") {
   if (!all(is.finite(zlim)) || diff(zlim) == 0) zlim <- zlim + c(-1, 1) * 1e-8
+  displayed <- t(z[nrow(z):1L, , drop = FALSE])
   image(
-    seq_len(ncol(z)), seq_len(nrow(z)), t(z[nrow(z):1L, , drop = FALSE]),
+    seq_len(ncol(z)), seq_len(nrow(z)), displayed,
     col = palette, zlim = zlim, axes = FALSE, useRaster = TRUE,
-    xlab = "", ylab = "", main = main
+    asp = 1, xlab = "", ylab = "", main = main
+  )
+  panel_bounds <- par("usr")
+  rect(
+    panel_bounds[[1L]], panel_bounds[[3L]],
+    panel_bounds[[2L]], panel_bounds[[4L]],
+    col = palette[[1L]], border = NA
+  )
+  image(
+    seq_len(ncol(z)), seq_len(nrow(z)), displayed,
+    col = palette, zlim = zlim, axes = FALSE, useRaster = TRUE,
+    add = TRUE
   )
   box()
 }
@@ -1057,14 +1077,18 @@ write_image_panel(
 )
 dev.off()
 
-# Publication panel: the two variance-bearing temporal modes form the rows,
-# while the four leading marginal spatial product eigenfunctions form the
-# columns. No eigenvalue or temporal loading is folded into either function.
+# Publication panel: the two variance-bearing temporal modes occupy the first
+# column, while the six leading marginal spatial product eigenfunctions fill
+# the remaining 2 x 3 grid. No eigenvalue or temporal loading is folded into
+# either function.
 spatial_values <- pmax(eig_full$values$lam_phi, 0) %o%
   pmax(eig_full$values$lam_psi, 0)
 spatial_order <- order(as.vector(spatial_values), decreasing = TRUE)
 spatial_indices <- arrayInd(spatial_order, dim(spatial_values))
-spatial_panel_count <- min(4L, args$top_fpcs, nrow(spatial_indices))
+spatial_panel_count <- 6L
+if (nrow(spatial_indices) < spatial_panel_count) {
+  stop("The spatiotemporal panel requires at least six spatial components.")
+}
 spatial_panel_indices <- spatial_indices[seq_len(spatial_panel_count), , drop = FALSE]
 spatial_panel_fve <- as.vector(spatial_values)[
   spatial_order[seq_len(spatial_panel_count)]
@@ -1106,7 +1130,8 @@ write_masked_spatial_panel <- function(z, main) {
     t(displayed[nrow(displayed):1L, , drop = FALSE]),
     col = diverging_palette,
     zlim = c(-spatial_panel_limit, spatial_panel_limit),
-    axes = FALSE, useRaster = TRUE, xlab = "", ylab = "", main = main
+    axes = FALSE, useRaster = TRUE, asp = 1,
+    xlab = "", ylab = "", main = main
   )
   contour(
     seq_len(ncol(brain_mask)), seq_len(nrow(brain_mask)),
@@ -1119,12 +1144,13 @@ write_masked_spatial_panel <- function(z, main) {
 
 png(
   file.path(args$output_dir, "top_fpc_spatiotemporal_panels.png"),
-  width = 2100L, height = 820L, res = 160L, bg = "white"
+  width = 1424L, height = 820L, res = 160L, bg = "white"
 )
-layout(matrix(
-  seq_len(length(publication_temporal_modes) * (spatial_panel_count + 1L)),
-  nrow = length(publication_temporal_modes), byrow = TRUE
-))
+spatial_panels_per_row <- 3L
+layout(
+  matrix(seq_len(8L), nrow = 2L, byrow = TRUE),
+  widths = c(1.36, rep(1, spatial_panels_per_row))
+)
 par(
   mar = c(3.1, 3.2, 2.7, 0.8), mgp = c(1.8, 0.55, 0),
   tcl = -0.25, cex.axis = 0.72, cex.lab = 0.78, cex.main = 0.84,
@@ -1147,7 +1173,11 @@ for (row in seq_along(publication_temporal_modes)) {
   )
   abline(h = 0, col = "grey75", lty = 3, lwd = 0.8)
   box(col = "black", lwd = 0.8)
-  for (spatial_mode in seq_len(spatial_panel_count)) {
+  spatial_modes_this_row <- seq.int(
+    (row - 1L) * spatial_panels_per_row + 1L,
+    min(row * spatial_panels_per_row, spatial_panel_count)
+  )
+  for (spatial_mode in spatial_modes_this_row) {
     write_masked_spatial_panel(
       spatial_panel_functions[[spatial_mode]],
       sprintf(
@@ -1260,13 +1290,13 @@ dev.off()
 
 png(
   continuum_output_file("reconstructed_mri_continuum", "png"),
-  width = 390L * args$continuum_landmarks,
-  height = 410L,
-  res = 120L, bg = "white"
+  width = 220L * args$continuum_landmarks,
+  height = 300L,
+  pointsize = 16L, res = 120L, bg = "white"
 )
 par(
   mfrow = c(1L, args$continuum_landmarks),
-  mar = c(1, 1, 2.8, 1), cex.main = 1.05
+  mar = c(1, 1, 2.8, 1), cex.main = 1
 )
 for (index in seq_along(latent_landmark_positions)) {
   write_image_panel(
@@ -1278,13 +1308,13 @@ dev.off()
 
 png(
   continuum_output_file("smoothed_observed_mri_continuum", "png"),
-  width = 390L * args$continuum_landmarks,
-  height = 410L,
-  res = 120L, bg = "white"
+  width = 220L * args$continuum_landmarks,
+  height = 300L,
+  pointsize = 16L, res = 120L, bg = "white"
 )
 par(
   mfrow = c(1L, args$continuum_landmarks),
-  mar = c(1, 1, 2.8, 1), cex.main = 1.05
+  mar = c(1, 1, 2.8, 1), cex.main = 1
 )
 for (index in seq_along(latent_landmark_positions)) {
   write_image_panel(
@@ -1296,13 +1326,13 @@ dev.off()
 
 png(
   continuum_output_file("observed_mri_continuum", "png"),
-  width = 390L * args$continuum_landmarks,
-  height = 410L,
-  res = 120L, bg = "white"
+  width = 220L * args$continuum_landmarks,
+  height = 300L,
+  pointsize = 16L, res = 120L, bg = "white"
 )
 par(
   mfrow = c(1L, args$continuum_landmarks),
-  mar = c(1, 1, 2.8, 1), cex.main = 1.05
+  mar = c(1, 1, 2.8, 1), cex.main = 1
 )
 for (index in seq_len(nrow(latent_landmarks))) {
   landmark <- latent_landmarks[index]
@@ -1320,7 +1350,7 @@ png(
   continuum_output_file("latent_coordinate_vs_age", "png"),
   width = 1050L, height = 780L, res = 140L
 )
-par(mar = c(5, 4.8, 4.8, 1))
+par(mar = c(5, 4.8, 3.5, 1))
 plot(
   score_table$latent_coordinate,
   score_table$baseline_age,
@@ -1328,7 +1358,11 @@ plot(
   col = grDevices::adjustcolor(subject_continuum_colors, alpha.f = 0.60),
   xlab = "Continuous morphology coordinate",
   ylab = "Baseline age (years)",
-  main = "Age varies along, but does not define, the MRI morphology continuum"
+  main = "", cex.lab = 1.20
+)
+title(
+  main = expression(bold(paste("Spearman ", rho, " = 0.430"))),
+  line = 1.7, cex.main = 1.15
 )
 age_smoother <- smooth.spline(
   score_table$latent_coordinate,
@@ -1341,12 +1375,14 @@ lines(
   predict(age_smoother, coordinate_grid)$y,
   col = "#333333", lwd = 3
 )
-mtext(
-  sprintf(
-    "Spearman rho = %.3f; coordinate learned from MRI scores without age",
-    continuum_diagnostics$coordinate_vs_age_spearman
+legend_values <- seq(0, 1, length.out = 5L)
+legend(
+  "bottomright",
+  legend = sprintf("%.2f", legend_values),
+  col = grDevices::adjustcolor(
+    continuum_color(legend_values), alpha.f = 0.60
   ),
-  side = 3L, line = 0.5, cex = 0.85
+  pch = 19, pt.cex = 1.10, bty = "n", cex = 0.95
 )
 dev.off()
 

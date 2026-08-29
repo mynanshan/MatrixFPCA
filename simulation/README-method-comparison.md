@@ -254,7 +254,15 @@ Rscript simulation/analyze_simu-methods.R
 By default this checks the 100-seed `main` design encoded by the launcher and
 writes machine-readable audit files, a complete long-form metric table, a wide
 relative-Hilbert--Schmidt-error table under `simulation/summary-methods/`, and
-prints the current scenario tables to the console. Use `--metrics all` to
+prints the current scenario tables to the console. It also writes the
+paper-facing `paper_results_long.csv` data frame and four method-by-row tables
+for dimension, covariance rank, sample size, and sensitivity experiments.
+Each table is saved as both CSV and copy-ready LaTeX (`.txt`) with the prefix
+`simulation_` and suffix `_table`. The tables use metric-by-setting column
+headers and report covariance error, subspace error, and fitting time; time is
+omitted from the sensitivity table because its settings are not computationally
+comparable. They omit audit counts and the deliberately weak Smooth-then-PCA
+baseline. Use `--metrics all` to
 include every summarized accuracy metric, `--scenarios dim_p8,n100_p8` to
 print a subset, or `--quiet` to write files without printing scenario tables.
 Method-level failures are

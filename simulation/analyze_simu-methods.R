@@ -38,7 +38,7 @@ parser$add_argument(
 )
 parser$add_argument(
   "--metrics",
-  default = paste(c("rel_hs_cov", "excess_rel_hs_cov", "sin2", "runtime"),
+  default = paste(c("rel_hs_cov", "sin2", "runtime"),
                   collapse = ","),
   help = paste(
     "Comma-separated metrics to print: rel_hs_cov, oracle_rank_rel_hs,",
@@ -484,7 +484,9 @@ comparison[, rank_rel_hs_cov := frank(mean_rel_hs_cov, ties.method = "min", na.l
            by = scenario]
 setorder(comparison, scenario_order, method_order)
 
-format_mean_sd <- function(mean_value, sd_value, digits = args$digits) {
+format_mean_sd <- function(
+  mean_value, sd_value, digits = args$digits, bold = rep(FALSE, length(mean_value))
+) {
   out <- rep("--", length(mean_value))
   has_mean <- is.finite(mean_value)
   has_both <- has_mean & is.finite(sd_value)
@@ -493,25 +495,78 @@ format_mean_sd <- function(mean_value, sd_value, digits = args$digits) {
     paste0("%.", digits, "f (%.", digits, "f)"),
     mean_value[has_both], sd_value[has_both]
   )
+  bold <- rep_len(bold, length(out)) & has_mean
+  out[bold] <- paste0("\\textbf{", out[bold], "}")
   out
 }
-publication_table <- comparison[, .(
+
+# Paper-facing results contain only the two principal accuracy criteria and
+# fitting time. Audit counts remain available in the dedicated audit files,
+# but are deliberately absent here. Smooth-then-PCA is a diagnostic weak
+# baseline and is not part of the paper comparison.
+paper_method_order <- data.table(
+  method = c(
+    "matfpca_refined", "matfpca_identity", "shi_mdfpca", "mfaces",
+    "happ_face", "happ_pace", "mgsfpca", "spaco_minus",
+    "sparse_product_fpca"
+  ),
+  method_short = c(
+    "MatFPCA (refined)", "MatFPCA (identity)", "Shi MD-FPCA", "mFACEs",
+    "HAPP-FACE", "HAPP-PACE", "mGSFPCA", "SPACO-minus", "Product FPCA"
+  ),
+  paper_method_order = seq_len(9L)
+)
+paper_scenario_order <- data.table(
+  scenario = c(
+    "dim_p8", "dim_p16", "dim_p32", "rank6_p8", "rank12_p8",
+    "n25_p8", "n100_p8", "visits_20_40_p8", "noise_05_p8",
+    "spectral_p8", "t5_p8", "dependent_p8"
+  ),
+  paper_scenario_label = c(
+    "Baseline", "Dimension 16 x 16", "Dimension 32 x 32", "Rank K = 6",
+    "Rank K = 12", "Sample size n = 25", "Sample size n = 100",
+    "11--20 visits", "Noise sigma = 0.5", "Alternative spectrum",
+    "t(5) scores", "Dependent scores"
+  ),
+  paper_scenario_latex = c(
+    "Baseline", "Dimension $16 \\times 16$", "Dimension $32 \\times 32$",
+    "Rank $K=6$", "Rank $K=12$", "Sample size $n=25$",
+    "Sample size $n=100$", "11--20 visits", "Noise $\\sigma=0.5$",
+    "Alternative spectrum", "$t_5$ scores", "Dependent scores"
+  ),
+  paper_scenario_order = seq_len(12L)
+)
+
+paper_results <- merge(
+  comparison[method != "spline_pca"], paper_method_order,
+  by = "method", all = FALSE, sort = FALSE
+)
+paper_results <- merge(
+  paper_results, paper_scenario_order,
+  by = "scenario", all = FALSE, sort = FALSE
+)
+setorder(paper_results, paper_scenario_order, paper_method_order)
+paper_results <- paper_results[, .(
+  scenario, scenario_label = paper_scenario_label, paper_scenario_latex,
+  scenario_order = paper_scenario_order, method, method_label,
+  method_short, method_order = paper_method_order,
+  mean_relative_hs_error = mean_rel_hs_cov,
+  sd_relative_hs_error = sd_rel_hs_cov,
+  mean_subspace_loss = mean_sin2,
+  sd_subspace_loss = sd_mean_sin2,
+  mean_runtime_seconds = mean_runtime,
+  sd_runtime_seconds = sd_runtime
+)]
+
+publication_table <- paper_results[, .(
   scenario_order, scenario, scenario_label, method_order, method, method_label,
-  relative_hs_error = format_mean_sd(mean_rel_hs_cov, sd_rel_hs_cov),
-  oracle_rank_error = format_mean_sd(
-    mean_oracle_rank_rel_hs, sd_oracle_rank_rel_hs
+  relative_hs_error = format_mean_sd(
+    mean_relative_hs_error, sd_relative_hs_error
   ),
-  excess_relative_hs_error = format_mean_sd(
-    mean_excess_rel_hs_cov, sd_excess_rel_hs_cov
-  ),
-  mean_sin2_angle = format_mean_sd(mean_sin2, sd_mean_sin2),
-  relative_eigenvalue_sse = format_mean_sd(
-    mean_rel_eigenvalue_sse, sd_rel_eigenvalue_sse
-  ),
+  mean_sin2_angle = format_mean_sd(mean_subspace_loss, sd_subspace_loss),
   runtime_seconds = format_mean_sd(
-    mean_runtime, sd_runtime, digits = args$runtime_digits
-  ),
-  successful_seeds = paste0(successful, "/", expected)
+    mean_runtime_seconds, sd_runtime_seconds, digits = args$runtime_digits
+  )
 )]
 
 primary_wide <- dcast(
@@ -585,6 +640,184 @@ fwrite(unexpected_result_rows,
 fwrite(comparison, file.path(args$output_dir, "method_comparison_complete.csv"))
 fwrite(publication_table, file.path(args$output_dir, "method_comparison_formatted.csv"))
 fwrite(primary_wide, file.path(args$output_dir, "relative_hs_error_wide.csv"))
+fwrite(paper_results, file.path(args$output_dir, "paper_results_long.csv"))
+
+# Paper tables put methods in rows and use metric-by-setting columns. Separate
+# experiment series stay in separate tables so all values remain readable at
+# ordinary page width. Standard deviations remain in paper_results_long.csv.
+format_table_mean <- function(value, digits, bold = FALSE) {
+  out <- rep("--", length(value))
+  available <- is.finite(value)
+  out[available] <- sprintf(paste0("%.", digits, "f"), value[available])
+  emphasize <- rep_len(bold, length(value)) & available
+  out[emphasize] <- paste0("\\textbf{", out[emphasize], "}")
+  out
+}
+
+source(file.path("simulation", "latex_table_helper.R"))
+build_paper_series_table <- function(
+  table_stem, scenario_ids, setting_labels, setting_latex,
+  caption, label, include_time = TRUE
+) {
+  stopifnot(
+    length(scenario_ids) == length(setting_labels),
+    length(scenario_ids) == length(setting_latex)
+  )
+  metrics <- data.table(
+    metric = c("Cov", "Subspace", "Time"),
+    value_column = c(
+      "mean_relative_hs_error", "mean_subspace_loss", "mean_runtime_seconds"
+    ),
+    digits = c(min(args$digits, 3L), min(args$digits, 3L), args$runtime_digits),
+    metric_order = 1:3
+  )
+  if (!include_time) metrics <- metrics[metric != "Time"]
+  settings <- data.table(
+    scenario = scenario_ids,
+    setting = setting_labels,
+    setting_latex = setting_latex,
+    setting_order = seq_along(scenario_ids)
+  )
+  series <- merge(
+    paper_results[scenario %in% scenario_ids], settings,
+    by = "scenario", all = FALSE, sort = FALSE
+  )
+  long <- rbindlist(lapply(seq_len(nrow(metrics)), function(index) {
+    specification <- metrics[index]
+    series[, .(
+      method_order, Method = method_short, setting, setting_latex,
+      setting_order,
+      metric = specification$metric,
+      metric_order = specification$metric_order,
+      digits = specification$digits,
+      value = get(specification$value_column)
+    )]
+  }))
+  long[, best := {
+    candidates <- value[is.finite(value)]
+    is.finite(value) & value <= min(candidates) + sqrt(.Machine$double.eps)
+  }, by = .(metric_order, setting_order)]
+  long[, `:=`(
+    display = format_table_mean(value, digits),
+    display_latex = format_table_mean(value, digits, bold = best)
+  )]
+  long[, column_id := paste0("m", metric_order, "s", setting_order)]
+
+  column_order <- long[
+    order(metric_order, setting_order), unique(column_id)
+  ]
+  wide <- dcast(
+    long, method_order + Method ~ column_id,
+    value.var = "display_latex", fill = "--"
+  )
+  csv_wide <- dcast(
+    long, method_order + Method ~ column_id,
+    value.var = "display", fill = "--"
+  )
+  setcolorder(wide, c("method_order", "Method", column_order))
+  setcolorder(csv_wide, c("method_order", "Method", column_order))
+  setorder(wide, method_order)
+  setorder(csv_wide, method_order)
+
+  csv_table <- copy(csv_wide[, !"method_order"])
+  flat_names <- unlist(lapply(metrics$metric, function(metric_name) {
+    paste(metric_name, setting_labels, sep = ": ")
+  }))
+  setnames(csv_table, c("Method", flat_names))
+  fwrite(csv_table, file.path(args$output_dir, paste0(table_stem, ".csv")))
+
+  metric_groups <- setNames(
+    rep(length(scenario_ids), nrow(metrics)), metrics$metric
+  )
+  latex_table <- latex_result_table(
+    wide[, !"method_order"],
+    settings_cols = "Method",
+    metric_groups = metric_groups,
+    column_names = c("Method", rep(setting_latex, times = nrow(metrics))),
+    caption = caption,
+    label = label,
+    align = c("l", rep("c", length(column_order))),
+    scale_down = TRUE,
+    font_size = 9,
+    collapse_cols = 1L,
+    latex_hline = "none"
+  )
+  write_latex_result_table(
+    latex_table, file.path(args$output_dir, paste0(table_stem, ".txt"))
+  )
+  invisible(list(data = csv_table, latex = latex_table))
+}
+
+dimension_table <- build_paper_series_table(
+  "simulation_dimension_table",
+  c("dim_p8", "dim_p16", "dim_p32"),
+  c("8 x 8", "16 x 16", "32 x 32"),
+  c("$8 \\times 8$", "$16 \\times 16$", "$32 \\times 32$"),
+  paste(
+    "Performance as image dimension varies. Cov denotes relative squared",
+    "Hilbert--Schmidt covariance error, Subspace denotes mean squared sine of",
+    "the principal angles, and Time is fitting time in seconds. Entries are",
+    "Monte Carlo means; smaller is better, bold is best in column, and --",
+    "denotes a method not run."
+  ),
+  "tab:simulation-dimension"
+)
+rank_table <- build_paper_series_table(
+  "simulation_rank_table",
+  c("rank6_p8", "dim_p8", "rank12_p8"),
+  c("K = 6", "K = 9", "K = 12"),
+  c("$K=6$", "$K=9$", "$K=12$"),
+  paste(
+    "Performance as covariance reconstruction rank varies. Cov denotes",
+    "relative squared Hilbert--Schmidt covariance error, Subspace denotes mean",
+    "squared sine of the principal angles, and Time is fitting time in seconds.",
+    "Entries are Monte Carlo means; smaller is better and bold is best in",
+    "column."
+  ),
+  "tab:simulation-rank"
+)
+sample_size_table <- build_paper_series_table(
+  "simulation_sample_size_table",
+  c("n25_p8", "dim_p8", "n100_p8"),
+  c("n = 25", "n = 50", "n = 100"),
+  c("$n=25$", "$n=50$", "$n=100$"),
+  paste(
+    "Performance as sample size varies. Cov denotes relative squared",
+    "Hilbert--Schmidt covariance error, Subspace denotes mean squared sine of",
+    "the principal angles, and Time is fitting time in seconds. Entries are",
+    "Monte Carlo means; smaller is better and bold is best in column."
+  ),
+  "tab:simulation-sample-size"
+)
+sensitivity_table <- build_paper_series_table(
+  "simulation_sensitivity_table",
+  c(
+    "dim_p8", "visits_20_40_p8", "noise_05_p8", "spectral_p8", "t5_p8",
+    "dependent_p8"
+  ),
+  c("Base", "Visits", "Noise", "Spectrum", "t5", "Dependent"),
+  c("Base", "Visits", "Noise", "Spectrum", "$t_5$", "Dep."),
+  paste(
+    "Sensitivity to observation density and distributional settings. Base is",
+    "the primary setting; Visits uses 11--20 rather than 6--10 visits; Noise",
+    "uses $\\sigma=0.5$; Spectrum uses the alternative spectrum; $t_5$ uses",
+    "heavy-tailed scores; and Dep. uses dependent scores. Cov denotes relative",
+    "squared Hilbert--Schmidt covariance error and Subspace denotes mean squared",
+    "sine of the principal angles. Entries are Monte Carlo means; smaller is",
+    "better and bold is best in column."
+  ),
+  "tab:simulation-sensitivity",
+  include_time = FALSE
+)
+
+# Remove outputs from the superseded methods-as-columns layout.
+unlink(file.path(
+  args$output_dir,
+  c(
+    "paper_accuracy_table.csv", "paper_runtime_table.csv",
+    "simulation_accuracy_table.txt", "simulation_runtime_table.txt"
+  )
+))
 
 options(width = max(getOption("width"), 200L))
 print(completion_overview)
@@ -630,7 +863,9 @@ if (length(unknown_metrics)) {
 if (!length(requested_metrics)) stop("At least one metric must be requested.")
 metric_definitions <- metric_definitions[match(requested_metrics, metric)]
 
-printed_comparison <- comparison
+printed_comparison <- comparison[method != "spline_pca"]
+printed_comparison[, console_method_order := match(method, paper_method_order$method)]
+setorder(printed_comparison, scenario_order, console_method_order)
 requested_scenarios <- split_argument(args$scenarios)
 if (length(requested_scenarios)) {
   unknown_scenarios <- setdiff(
@@ -640,7 +875,7 @@ if (length(requested_scenarios)) {
   if (length(unknown_scenarios)) {
     stop("Unknown scenario(s): ", paste(unknown_scenarios, collapse = ", "))
   }
-  printed_comparison <- comparison[
+  printed_comparison <- printed_comparison[
     scenario %in% requested_scenarios | scenario_label %in% requested_scenarios
   ]
 }
@@ -649,8 +884,7 @@ if (!isTRUE(args$quiet)) {
   for (scenario_id in unique(printed_comparison$scenario)) {
     section <- printed_comparison[scenario == scenario_id]
     output <- section[, .(
-      Method = method_label,
-      Successful = paste0(successful, "/", expected)
+      Method = method_label
     )]
     for (metric_index in seq_len(nrow(metric_definitions))) {
       definition <- metric_definitions[metric_index]
@@ -665,7 +899,7 @@ if (!isTRUE(args$quiet)) {
         metric_digits
       )]
     }
-    setcolorder(output, c("Method", metric_definitions$label, "Successful"))
+    setcolorder(output, c("Method", metric_definitions$label))
     cat("\n", section$scenario_label[[1L]], " [", scenario_id, "]\n", sep = "")
     print(output, row.names = FALSE)
   }

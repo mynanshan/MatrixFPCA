@@ -23,9 +23,13 @@ The pipeline applies these design rules before fitting:
 - it block-averages the images to 114 x 96 by default. This retains substantially
   more anatomical detail while keeping three-fold covariance cross-fitting
   practical;
+- it retains the complete row and column eigensystems for score prediction and
+  reconstruction, and applies the marginal-PVE low-rank cutoff only to the
+  temporal eigensystem, with a minimum of two temporal modes for presentation,
+  as required by the full-rank spatial theory;
 - it evaluates the full temporal eigensystem even when marginal-PVE truncation
-  retains only one time mode. A trapezoidal quadrature correction accounts for
-  the irregular compact time grid. For each numerically supported mode, it
+  would retain only one time mode. A trapezoidal quadrature correction accounts
+  for the irregular compact time grid. For each numerically supported mode, it
   reports marginal PVE and the fraction of time-domain energy left after
   subtracting the best constant approximation. A diagnostic screen calls a mode
   materially dynamic when these quantities are at least 0.1% and 50%,
@@ -83,9 +87,9 @@ The result directory contains:
   inferred brain mask;
 - `inferred_brain_mask.png`: the training-only consensus mask used by the fit
   and reconstructions;
-- `top_fpc_spatiotemporal_panels.png`: a publication-oriented 2 x 5 display.
+- `top_fpc_spatiotemporal_panels.png`: a publication-oriented 2 x 4 display.
   Each row begins with one of the two variance-bearing temporal eigenfunctions
-  and then shows the four leading spatial product eigenfunctions. Captions give
+  and the remaining grid shows spatial product eigenfunctions 1--6. Captions give
   separate marginal FVE, and all panels of a given type share a common scale;
 - `temporal_eigencomponent_diagnostics.csv` and
   `temporal_eigencomponent_diagnostics.png`: full-eigensystem evidence for

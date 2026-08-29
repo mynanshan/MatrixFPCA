@@ -27,7 +27,10 @@ manifest <- fread(manifest_file, na.strings = c("", "NA"))
 
 subject_ids <- model$subject_ids
 ranks <- fit$ranks
-stopifnot(identical(as.integer(ranks), c(34L, 24L, 1L)))
+stopifnot(
+  identical(as.integer(ranks[c("row", "column")]), as.integer(model$image_dim)),
+  ranks[["time"]] >= 2L
+)
 
 # Recreate the centered, training-visit data used for score estimation. This
 # reuses the pooled image cache and the already fitted mean/covariance models;
@@ -126,7 +129,10 @@ diagnostic_eigen <- create_matrix_eigobj(
   t_grid = model$t_grid_years
 )
 
-message("Estimating diagnostic scores at ranks 34 x 24 x 2...")
+message(
+  "Estimating diagnostic scores at ranks ",
+  paste(c(ranks[c("row", "column")], 2L), collapse = " x "), "..."
+)
 diagnostic_scores <- get_matfpca_scores(
   mat_data,
   diagnostic_eigen,
@@ -137,7 +143,7 @@ score_array <- diagnostic_scores@data
 score_matrix <- matrix(score_array, nrow = length(subject_ids))
 retained_score_matrix <- matrix(fit$scores@data, nrow = length(subject_ids))
 retained_basis_score_correlations <- vapply(
-  seq_len(ncol(retained_score_matrix)),
+  seq_len(ncol(score_matrix)),
   function(j) cor(score_matrix[, j], retained_score_matrix[, j]),
   numeric(1L)
 )
@@ -185,7 +191,7 @@ component_table[, eigenvalue :=
     diagnostic_eigen$values$lam_theta[time_component]
 ]
 setorder(component_table, -eigenvalue)
-component_table[, product_rank_within_34x24x2 := .I]
+component_table[, product_rank_within_full_spatial_x2 := .I]
 component_table[, theoretical_variance_fraction := eigenvalue / sum(eigenvalue)]
 component_table[, theoretical_cumulative_variance_fraction :=
   cumsum(theoretical_variance_fraction)
@@ -420,13 +426,13 @@ component_table <- spatial_localization[component_table,
   on = .(row_component, column_component)]
 setcolorder(component_table, c(
   "component", "row_component", "column_component", "time_component",
-  "product_rank_within_34x24x2", "eigenvalue",
+  "product_rank_within_full_spatial_x2", "eigenvalue",
   "theoretical_variance_fraction", "theoretical_cumulative_variance_fraction",
   "empirical_score_sd", "empirical_score_variance_to_eigenvalue",
   "mean_score_reliability",
   setdiff(names(component_table), c(
     "component", "row_component", "column_component", "time_component",
-    "product_rank_within_34x24x2", "eigenvalue",
+    "product_rank_within_full_spatial_x2", "eigenvalue",
     "theoretical_variance_fraction", "theoretical_cumulative_variance_fraction",
     "empirical_score_sd", "empirical_score_variance_to_eigenvalue",
     "mean_score_reliability"
@@ -470,19 +476,19 @@ summary_lines <- c(
   "Top temporal-2 age associations by absolute Spearman rho:",
   top_line(
     component_table[time_component == 2L][order(-abs(age_spearman_rho))],
-    c("component", "product_rank_within_34x24x2", "theoretical_variance_fraction", "mean_score_reliability", "age_spearman_rho", "age_partial_r2_given_group_and_schedule", "age_schedule_adjusted_fdr_within_time")
+    c("component", "product_rank_within_full_spatial_x2", "theoretical_variance_fraction", "mean_score_reliability", "age_spearman_rho", "age_partial_r2_given_group_and_schedule", "age_schedule_adjusted_fdr_within_time")
   ),
   "",
   "Top temporal-2 age-adjusted group associations by partial R2:",
   top_line(
     component_table[time_component == 2L][order(-group_partial_r2_given_age_and_schedule)],
-    c("component", "product_rank_within_34x24x2", "theoretical_variance_fraction", "mean_score_reliability", "group_partial_r2_given_age_and_schedule", "group_age_schedule_adjusted_fdr_within_time", "mean_z_mci_nonconverter", "mean_z_mci_converter", "mean_z_ad_baseline")
+    c("component", "product_rank_within_full_spatial_x2", "theoretical_variance_fraction", "mean_score_reliability", "group_partial_r2_given_age_and_schedule", "group_age_schedule_adjusted_fdr_within_time", "mean_z_mci_nonconverter", "mean_z_mci_converter", "mean_z_ad_baseline")
   ),
   "",
   "Top temporal-2 converter/non-converter associations after adjusting for age and visit schedule:",
   top_line(
     component_table[time_component == 2L][order(-mci_converter_partial_r2_given_age_and_schedule)],
-    c("component", "product_rank_within_34x24x2", "theoretical_variance_fraction", "mean_score_reliability", "mci_converter_standardized_mean_difference", "mci_converter_partial_r2_given_age_and_schedule", "mci_converter_age_schedule_adjusted_fdr_within_time")
+    c("component", "product_rank_within_full_spatial_x2", "theoretical_variance_fraction", "mean_score_reliability", "mci_converter_standardized_mean_difference", "mci_converter_partial_r2_given_age_and_schedule", "mci_converter_age_schedule_adjusted_fdr_within_time")
   )
 )
 writeLines(summary_lines, file.path(result_dir, "fpc_association_summary.txt"))

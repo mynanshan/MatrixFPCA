@@ -86,7 +86,7 @@ fwrite(
   selected_components[, .(
     phenomenon, selection_block, selection_rank, component,
     row_component, column_component, time_component,
-    product_rank_within_34x24x2, theoretical_variance_fraction,
+    product_rank_within_full_spatial_x2, theoretical_variance_fraction,
     mean_score_reliability, effect_r2, effect_beta, effect_fdr
   )],
   file.path(result_dir, "phenotype_fpc_panel_selection.csv")

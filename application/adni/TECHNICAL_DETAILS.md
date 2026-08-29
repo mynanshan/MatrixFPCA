@@ -120,12 +120,18 @@ one-visit reconstruction holdout described above.
 
 ## 4. Truncation, FVE, and subject scores
 
-The row, column, and time ranks are the smallest marginal ranks reaching 95%
-positive-eigenvalue cumulative variance. The current retained ranks are
+The complete row and column eigensystems are retained; only the temporal
+eigensystem is truncated. The time rank is the smallest rank reaching 95%
+positive-eigenvalue cumulative variance, subject to a minimum of two temporal
+modes for presentation. Thus
 
 \[
-(I,J,K)=(34,24,1).
+(I,J,K)=(p,q,\max\{2,K_{0.95}\}),
 \]
+
+which gives full spatial ranks \((I,J)=(114,96)\) under the default pooling.
+This matches the paper's well-conditioned, full-rank spatial regime and avoids
+introducing spatial truncation error or dependence on spatial eigengaps.
 
 Product components are ordered by
 
