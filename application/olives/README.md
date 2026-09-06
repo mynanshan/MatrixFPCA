@@ -1,79 +1,94 @@
-# OLIVES latent-matrix experiment
+# OLIVES retinal OCT feature experiment
 
-This directory is intentionally separate from `application/adni-latent`. It
-contains OLIVES retinal OCT inspection and the preparation path for a future
-frozen RETFound latent-matrix experiment.
+This directory documents the reusable OLIVES data layout and the feature-based
+longitudinal analysis. The raw images and labels are kept under `data/OLIVES`
+and `data/OLIVES_Dataset_Labels`; generated features and fitted models belong in
+the ignored `application/olives/output/` directory.
 
-## Current status
+The local release contains 87 patients and 96 study eyes. The TREX-DME
+collection has 47 patients represented by GILA, TREX, and Monthly arms. Visits
+are recorded as `V1`, `V2`, … and are not interchangeable with elapsed weeks.
+The image-level clinical workbook maps full image paths to `Patient_ID`,
+`Eye_ID`, BCVA, and CST. Join on the full relative path, never on a basename.
+Within a complete acquisition there are 49 ordered OCT B-scans; a visit is a
+longitudinal observation and the B-scans are spatial positions within that
+observation.
 
-The local Hugging Face parquet export is sufficient for image and label quality
-control, but not for defensible longitudinal modeling:
+`DATA_STRUCTURE.md` contains the detailed inventory, path conventions, label
+tables, and image examples. `subject_inventory.csv` and
+`patient_inventory.csv` are filename inventories and are not independent
+observations.
 
-- `disease_classification` contains 78,822 rows across 32 parquet shards; the
-  same image corpus is repeated in the biomarker-training export with a
-  different label schema.
-- Images are embedded in the parquet `Image.bytes` field. `Image.path` retains
-  only a basename, not the original directory hierarchy.
-- There are 96 eyes from 87 patients. Eye, rather than patient, is the natural
-  longitudinal subject; patient can be retained as a clustering identifier.
-- No week/date, visit, treatment time, or volume identifier survives in the
-  local schema. `Scan (n/49)` is missing for 77.81% of disease rows, and row or
-  lexicographic filename order cannot safely reconstruct visits.
+## Frozen RETFound representation
 
-The official OLIVES processing code derives `Week` from the full source path
-and constructs volumes by `Eye_ID + Week`. That information was stripped from
-the downloaded parquet, so this application deliberately does not invent a
-time index. See the [official OLIVES repository](https://github.com/olivesgatech/OLIVES_Dataset).
+RETFound is a retinal foundation model trained with masked autoencoding: a
+vision transformer learns to reconstruct masked retinal-image patches from the
+visible context. We use the released OCT-specific ViT-Large checkpoint, frozen
+for inference. Its encoder has 24 transformer blocks, 16 × 16 image patches,
+and a 1,024-dimensional hidden state. The model is a representation learner;
+we do not use its decoder, a disease-specific classifier, or any fine-tuning on
+the OLIVES clinical labels.
 
-## Visual QC / unpacking
+`prepare_retfound.py` builds an outcome-blind manifest using one nominal central
+B-scan (index 24) per eligible eye-visit, one study eye per patient, and the
+documented visit index. It does not align, crop, downsample, or otherwise
+modify the image.
 
-`unpack_olives.py` streams selected parquet row groups, writes the exact
-original encoded image bytes, validates them with Pillow, records hashes and
-available scalar labels in `manifest.csv`, and can produce a grayscale contact
-sheet. It labels every output as QC-only and infers no visit, volume, B-scan
-position, or longitudinal order.
+`extract_retfound.py` runs the official OCT RETFound MAE ViT-L/16 encoder with
+deterministic evaluation preprocessing: RGB conversion, bicubic resize of the
+short side to 256, center crop to 224, and ImageNet normalization. It saves the
+final encoder patch tokens, excluding CLS, as a `196 × 1024` matrix for every
+eye-visit. Rows are the 14 × 14 raster patch positions and columns are learned
+feature coordinates. The checkpoint is loaded frozen; the MAE decoder and any
+task head are discarded. The script records checkpoint and manifest hashes and
+checks repeatability against the official encoder sequence.
 
-Create an isolated environment:
+The resulting entries are latent activation coordinates, not segmented retinal
+layers or hand-designed biomarkers. A row corresponds to one spatial 16 × 16
+patch in the standardized 224 × 224 input; a column is one learned channel in
+the final transformer representation. Neighboring rows preserve image-patch
+order, while neighboring columns do not have a direct clinical interpretation.
+The separate `pooled.npy` file averages the 196 patch vectors and is used only
+for a low-dimensional exploratory screen. MatFPCA uses the full patch-by-
+feature matrix, so it can model covariance across patch locations and learned
+feature coordinates jointly.
+
+The model checkpoint is the OCT weight linked by the
+[RETFound repository](https://github.com/openmedlab/RETFound_MAE). The local
+Compute Canada environment is used through
+`~/projects/def-jiguocao/muye/env/neuro/bin/python`; the supplied Slurm script
+requests one H100 GPU. The saved matrices are the only inputs to the subsequent
+MatFPCA fit; raw pixel matrices are not used.
+
+The encoder dependencies are listed in `requirements-retfound.txt`. The
+checkpoint itself is intentionally kept outside Git.
 
 ```bash
-python -m venv application/olives/.venv
-application/olives/.venv/bin/pip install \
-  -r application/olives/requirements-qc.txt
+module load scipy-stack/2025a
+python application/olives/prepare_retfound.py
+sbatch application/olives/run_retfound.sbatch
 ```
 
-Extract a fresh deterministic sample:
-
-```bash
-application/olives/.venv/bin/python \
-  application/olives/unpack_olives.py \
-  --samples=16 \
-  --contact-sheet \
-  --output-dir=application/olives/output/olives_qc_fresh
-```
-
-A validated 16-image sample, provenance manifest, QC warning, and contact sheet
-already exist in `application/olives/output/olives_qc`. Generated output is
-ignored by Git. The source parquet under `data/OLIVES` is never modified.
-
-Do not globally deduplicate images by hash: distinct documented visits can
-contain identical scans. Duplicate rows can be collapsed only after restoring
-the original full path/week and showing that they refer to the same source
-record and visit.
-
-## What is needed for longitudinal OLIVES + RETFound
-
-Please provide either:
-
-1. the original Zenodo OLIVES directory plus `Clinical_Data_Images.xlsx`; or
-2. a manifest with full file path, `Eye_ID`, week/date, visit/volume ID, scan
-   position, and the desired clinical/treatment variables.
-
-With that manifest, the next implementation can recover `(eye, week, scan)`,
-validate 49-scan volumes, select or aggregate consistent B-scans, and encode
-each visit as a fixed patch-token matrix.
-
-The [official RETFound code](https://github.com/rmaphoh/RETFound) is public,
-but the [official OCT checkpoint](https://huggingface.co/YukunZhou/RETFound_mae_natureOCT)
-requires a Hugging Face account and acceptance of its access terms. Supply any
-token through the environment and never commit it. RETFound is a ViT-Large
-model, so a CUDA GPU is strongly recommended for full extraction.
+After extraction, `matfpca_retfound.R` fits the existing matrix-valued FPCA
+implementation to the patch-by-feature trajectories and writes the retained
+scores and diagnostics. `associate_retfound_scores.R` tests the leading
+matrix-FPCA product scores against the clinical endpoints. `continuum_retfound.R`
+forms the joint score geometry and fits an ADNI-style principal curve, including
+age, BCVA, CST, and available baseline biomarker-coordinate associations.
+Its primary joint test uses all nonzero score-geometry coordinates through a
+distance/kernel permutation statistic; the first-ten-coordinate regression is
+reported only as a sensitivity analysis because downstream truncation can lose
+distributed signal.
+`pca_retfound_scores.R` applies ordinary PCA to that complete score geometry
+and tests every nonzero PCA mode against the same broad clinical panel. It
+reports both a global correction over all mode/outcome pairs and a correction
+within each outcome, so low-variance modes are not silently removed before
+clinical screening. Its output also flags constant or extremely sparse binary
+labels; those labels remain in the audit table but are excluded from the
+screenable sensitivity family because a one-positive association can be driven
+by a single patient.
+`prepare_retfound_biomarkers.py` joins the sparse image-level biomarker export
+at the visit level. `check_retfound_clinical.py` performs an exploratory
+patient-level association screen using frozen pooled RETFound features and
+clinical baseline/change variables; this is a representation check, not a
+confirmatory clinical analysis.

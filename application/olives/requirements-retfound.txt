@@ -1,0 +1,6 @@
+# The supplied neuro environment already provides torch/torchvision; install
+# these only if its matching PyTorch stack does not include them.
+timm>=1.0.19
+scikit-learn>=1.5
+scipy>=1.11
+Pillow>=10
