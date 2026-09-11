@@ -53,6 +53,15 @@ for a low-dimensional exploratory screen. MatFPCA uses the full patch-by-
 feature matrix, so it can model covariance across patch locations and learned
 feature coordinates jointly.
 
+The extractor also saves `cls.npy`, the final normalized global CLS token. It
+is not a substitute for the spatial patch matrix: it is a useful global
+morphology representation when a clinical quantity, such as central subfield
+thickness, is itself a visit-level summary. `screen_retfound_embeddings.py`
+fits an unsupervised baseline PCA to this token and tests its modes against
+the broad clinical panel. This screen is kept separate from the patch-matrix
+MatFPCA fit so that static baseline morphology is not diluted by a model whose
+primary purpose is longitudinal covariance.
+
 The model checkpoint is the OCT weight linked by the
 [RETFound repository](https://github.com/openmedlab/RETFound_MAE). The local
 Compute Canada environment is used through
@@ -87,6 +96,9 @@ clinical screening. Its output also flags constant or extremely sparse binary
 labels; those labels remain in the audit table but are excluded from the
 screenable sensitivity family because a one-positive association can be driven
 by a single patient.
+`screen_retfound_embeddings.py` performs the complementary baseline-only CLS
+screen; it is outcome-blind during PCA fitting and reports associations with
+both baseline quantities and V13-minus-V1 changes.
 `prepare_retfound_biomarkers.py` joins the sparse image-level biomarker export
 at the visit level. `check_retfound_clinical.py` performs an exploratory
 patient-level association screen using frozen pooled RETFound features and

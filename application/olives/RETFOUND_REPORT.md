@@ -108,14 +108,56 @@ leverage and is retained only to make the sparse-label failure visible.
 
 After excluding constant labels, labels with fewer than five observations in
 one level, and outcomes without arm variation, 25 outcomes remain (1,150
-mode/outcome tests). No
-mode has global BH q < 0.05 in this screenable family. The strongest
+mode/outcome tests). No mode has global BH q < 0.05 in this screenable family.
+The strongest
 within-outcome result is mode 2 or 4 versus baseline preretinal
 tissue/hemorrhage (q = 0.084 after correcting over modes); mode 39 versus
 V13−V1 CST change has r = 0.517, p = 0.00288, q = 0.132. Neither is corrected
 across the full clinical panel. Thus the extra PCA does not currently deliver
 a robust, multiplicity-safe clinical mode, although the audit still shows why
 variance truncation must be treated as a sensitivity choice.
+
+## A promising representation and framing direction
+
+The saved RETFound CLS token gives a useful diagnostic contrast with the patch
+matrix. I fitted an outcome-blind PCA to the 47 baseline CLS vectors only,
+then tested the resulting modes against the same 37-outcome panel, including
+baseline BCVA/CST and V13−V1 changes. CLS mode 2 explains 11.49% of baseline
+embedding variance and has arm-adjusted r = −0.576 with baseline CST
+(p = 2.25 × 10⁻⁵; global BH q = 0.0196 across all 1,110 tests; q = 0.0169
+after excluding sparse/constant labels). Its rank correlation is also strong
+(rho = −0.560, p = 4.21 × 10⁻⁵). This is the strongest association in the
+broader screen that remains significant after testing a prespecified clinical
+panel and has a continuous, clinically interpretable endpoint.
+
+The same baseline CLS mode is associated with V13−V1 CST change (r = 0.631,
+p = 1.40 × 10⁻⁴; within-outcome q = 0.0042), but its broad-panel q = 0.0611
+is just above 0.05. That result is therefore a promising prognostic hypothesis,
+not a confirmed treatment-response marker. Baseline BCVA also has a nominal
+association (r = 0.482, p = 0.00061) that does not survive the broad-panel
+correction.
+
+This contrast suggests a concrete reframing. The current patch-token
+longitudinal MatFPCA is asking one covariance model to represent both static
+baseline morphology and temporal change, while its subject BLUP scores are
+estimated from every visit. A global CLS direction can therefore be diluted or
+rotated away in the full score tensor even when it is clinically real. The next
+analysis should separate: (1) a baseline matrix-FPCA/global-embedding axis for
+structural morphology and baseline CST, and (2) a change-specific functional
+analysis for treatment response. The CLS axis should be retained as a
+prespecified covariate when testing longitudinal outcomes, rather than selected
+after looking at the outcome. A pilot that routed the CLS trajectories through
+the current full longitudinal MatFPCA still did not reproduce the baseline CST
+association, so simply swapping the token type is not sufficient; the baseline
+versus change decomposition is part of the proposed fix.
+
+The baseline CLS screen is in
+`output/retfound/embedding_screen/cls_baseline_pca_clinical_associations.csv`
+with its spectrum in `cls_baseline_pca_spectrum.csv` and patient-level scores
+in `cls_baseline_pca_scores.csv`. These results do not
+replace the patch-matrix MatFPCA result; they identify a representation and
+problem-framing direction that should be validated before adding more flexible
+supervised models.
 
 Joint tests are in `output/retfound/matfpca/joint_score_omnibus_tests.csv`;
 curve coordinates and clinical variables are in
@@ -142,6 +184,8 @@ Files produced by the reusable workflow:
 - `prepare_retfound_biomarkers.py`: visit-level join to sparse OCT biomarkers;
 - `extract_retfound.py`: frozen encoder and patch matrices;
 - `check_retfound_clinical.py`: pooled-feature clinical screen;
+- `screen_retfound_embeddings.py`: baseline CLS/pooled embedding screen against
+  the broad clinical panel;
 - `matfpca_retfound.R`: feature-matrix MatFPCA fit;
 - `associate_retfound_scores.R`: leading product-score association screen;
 - `continuum_retfound.R`: joint-score permutations and principal curve;

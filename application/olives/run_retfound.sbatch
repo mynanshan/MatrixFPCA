@@ -15,6 +15,7 @@ NEURO_PYTHON="${NEURO_PYTHON:-/home/muye/projects/def-jiguocao/muye/env/neuro/bi
 "$NEURO_PYTHON" -u application/olives/check_retfound_clinical.py
 "$NEURO_PYTHON" -u application/olives/prepare_retfound_demographics.py
 "$NEURO_PYTHON" -u application/olives/prepare_retfound_biomarkers.py
+"$NEURO_PYTHON" -u application/olives/screen_retfound_embeddings.py --representation cls
 module load r/4.5.0
 Rscript application/olives/matfpca_retfound.R \
   application/olives/output/retfound/features \

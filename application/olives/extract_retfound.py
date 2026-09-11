@@ -165,7 +165,7 @@ def main():
                   manifest_sha256=sha256(manifest), n_images=n, patch_shape=[n,196,1024], dtype='float32',
                   preprocessing='PIL RGB; bicubic shorter-side resize 256; center crop 224; ImageNet mean/std',
                   laterality_flip=False, axial_alignment=False, random_augmentation=False,
-                  tokens='final encoder LayerNorm, CLS excluded, raster patch order (14 rows x 14 columns)',
+                  tokens='final encoder LayerNorm; patch_tokens excludes CLS; cls.npy stores the global CLS token; patch order is raster (14 rows x 14 columns)',
                   pooled='mean of final normalized patch tokens; no task-specific fc_norm or classifier',
                   matrix_axes=['eye_visit','spatial_patch','learned_feature'],
                   repeat_max_abs_difference=repeat_max, official_sequence_max_abs_difference=reference_max,
