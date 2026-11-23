@@ -1,0 +1,534 @@
+https://balsa.wustl.edu/As for our Matrix FPCA project, obtaining the fetal brain growth or infant brain growth data is actually pretty hard due to the access issue, due to the data management issue. So Emma, one of my collaborators, recommended me this website and says that the data download from here is relatively easy, but I don't know whether there is one of them that suits my need, that can be formulated as longitudinal matrix observed on sparsely regular times. So for the matrix, it can be just image itself, it can be image slices, or it can be some reliable latent representation matrix-shaped representation of the data.
+Yes. I checked BALSA with the Matrix-FPCA question in mind, and there is one candidate that stands out much more than I expected:
+
+Aging Adult Brain Connectome (AABC) Release 2 is probably a genuinely strong dataset for our Matrix-FPCA methodology. It is not fetal/infant growth, but statistically its design is much closer to what we want than most developmental datasets we have discussed.
+
+AABC Release 2 contains 1,396 participants, with 1,390 having MRI, and 2,789 imaging visits. The visit distribution is V1 = 1,396, V2 = 915, V3 = 471, V4 = 96. Participants are ages 36–90+, and the study explicitly describes these as longitudinal observations intended to construct within-subject trajectories over spans up to about 10 years. It includes structural MRI, resting-state fMRI, task fMRI, diffusion MRI, ASL, and imaging-derived phenotypes. 
+
+That sampling pattern,
+
+m
+i
+∈
+{
+1
+,
+2
+,
+3
+,
+4
+}
+,
+Y
+i
+(
+t
+i
+j
+)
+∈
+R
+p
+×
+q
+,
+m 
+i
+​
+ ∈{1,2,3,4},Y 
+i
+​
+ (t 
+ij
+​
+ )∈R 
+p×q
+ ,
+with many people having only 1–2 observations and relatively few having 3–4, is almost exactly a sparse functional-data design.
+
+There is one caveat: the visits are longitudinal study visits rather than observation times deliberately sampled at arbitrary irregular times. But if the actual age/date-at-scan is available—and I would expect it to be among the phenotypic data—then subjects enter at very different ages and have varying follow-up intervals. Consequently, viewed on the common age domain, the pooled observations should be sparse and irregular:
+
+t
+i
+j
+=
+age at MRI visit
+i
+j
+.
+t 
+ij
+​
+ =age at MRI visit 
+ij
+​
+ .
+That is much more relevant to our theoretical setup than whether they are called V1/V2/V3/V4.
+
+The particularly interesting part: don't necessarily use image slices
+My first instinct after looking at the available modalities is that the best matrix-valued object may actually be the individual brain connectome rather than a 2-D MRI slice.
+
+For example, from resting-state fMRI we could construct
+
+Y
+i
+(
+t
+)
+=
+[
+ρ
+11
+(
+t
+)
+⋯
+ρ
+1
+p
+(
+t
+)
+⋮
+⋮
+ρ
+p
+1
+(
+t
+)
+⋯
+ρ
+p
+p
+(
+t
+)
+]
+,
+Y 
+i
+​
+ (t)= 
+​
+  
+ρ 
+11
+​
+ (t)
+⋮
+ρ 
+p1
+​
+ (t)
+​
+  
+⋯
+⋯
+​
+  
+ρ 
+1p
+​
+ (t)
+⋮
+ρ 
+pp
+​
+ (t)
+​
+  
+​
+ ,
+where 
+Y
+i
+(
+t
+)
+Y 
+i
+​
+ (t) is a parcel-by-parcel functional-connectivity matrix at age 
+t
+t. A 200-, 300-, or 360-region parcellation gives a real 
+p
+×
+p
+p×p matrix for every subject/visit.
+
+That would give us a very clean scientific question:
+
+What are the dominant modes of longitudinal change in brain connectivity across normal aging?
+
+And mathematically it is truly matrix-valued—not an image artificially converted into a matrix. AABC contains resting-state fMRI and diffusion imaging at longitudinal visits. 
+
+This is potentially a stronger application for the methodology than what we were previously trying to force out of fetal imaging.
+
+There are several representations I would seriously consider, roughly in this order:
+
+Representation	
+Y
+i
+(
+t
+)
+Y 
+i
+​
+ (t)	Suitability	Main issue
+Functional connectome	parcel × parcel FC matrix	Excellent	symmetric/PSD-ish structure
+Structural connectome	parcel × parcel DWI connectivity	Excellent	tractography preprocessing
+Registered MRI slice	pixel × pixel	Very good	slice selection/alignment
+Cortical map	spatial 2-D representation	Good	surface → matrix mapping required
+Deep latent matrix	
+p
+ℓ
+×
+q
+ℓ
+p 
+ℓ
+​
+ ×q 
+ℓ
+​
+  feature map	Interesting	interpretation + encoder stability
+The symmetric-connectome case is actually methodologically interesting. Standard Matrix-FPCA with
+
+Cov
+⁡
+{
+vec
+⁡
+Y
+(
+s
+)
+,
+vec
+⁡
+Y
+(
+t
+)
+}
+≈
+C
+t
+(
+s
+,
+t
+)
+⊗
+C
+c
+⊗
+C
+r
+Cov{vecY(s),vecY(t)}≈C 
+t
+​
+ (s,t)⊗C 
+c
+​
+ ⊗C 
+r
+​
+ 
+doesn't explicitly exploit 
+Y
+=
+Y
+⊤
+Y=Y 
+⊤
+ . We could initially ignore symmetry and treat it as ordinary matrix-valued functional data, and later mention symmetric-MatFPCA as an extension. I wouldn't complicate the first paper with this unless necessary.
+
+But image slices remain very viable
+AABC also gives us preprocessed structural MRI. 
+ Since HCP-style preprocessing places the images into standardized anatomical space, we could choose a reproducible plane and define, for instance,
+
+Y
+i
+(
+t
+)
+=
+central coronal T1w slice at age 
+t
+.
+Y 
+i
+​
+ (t)=central coronal T1w slice at age t.
+That gives an extremely intuitive Matrix-FPCA visualization:
+
+Y
+i
+(
+t
+)
+=
+μ
+(
+t
+)
++
+∑
+k
+ξ
+i
+k
+Φ
+k
+(
+t
+)
++
+ϵ
+i
+(
+t
+)
+,
+Y 
+i
+​
+ (t)=μ(t)+ 
+k
+∑
+​
+ ξ 
+ik
+​
+ Φ 
+k
+​
+ (t)+ϵ 
+i
+​
+ (t),
+where the 
+Φ
+k
+(
+t
+)
+Φ 
+k
+​
+ (t)'s can literally be visualized as spatial patterns of longitudinal brain aging.
+
+This gives prettier figures and a more immediately obvious demonstration of Matrix-FPCA, while connectomes give a scientifically cleaner matrix.
+
+I would probably test both during exploration.
+
+What about actual developmental datasets on BALSA?
+There is HCP-Development (HCP-D), and scientifically it looks very attractive. The full project covers ages 5–21, with most participants measured once but a subset participating in a three-wave longitudinal component around ages 9–17. The acquisition includes structural, functional, diffusion and perfusion MRI. 
+
+On paper that sounds like:
+
+{
+Y
+i
+(
+t
+i
+1
+)
+,
+Y
+i
+(
+t
+i
+2
+)
+,
+Y
+i
+(
+t
+i
+3
+)
+}
+,
+{Y 
+i
+​
+ (t 
+i1
+​
+ ),Y 
+i
+​
+ (t 
+i2
+​
+ ),Y 
+i
+​
+ (t 
+i3
+​
+ )},
+which is exactly what we want for developmental trajectories.
+
+However, there is an important catch. The BALSA HCP-D page I found is a BALSA Study associated with the publication, and its downloadable files are things such as group-average volumes, surfaces, and task activation maps. 
+ BALSA itself describes its traditional “Studies” as extensively analyzed datasets associated with publications and organized around Connectome Workbench scenes. 
+
+The individual-level HCP-D release is a different matter. The official HCP page says its Release 2.0 participant data are accessed through the HCP/NDA ecosystem; the public release page currently describes V1 imaging from 652 participants, although the underlying study contains the longitudinal subgroup. 
+
+So I would classify it as:
+
+HCP-D: scientifically excellent, but does not obviously solve your access headache.
+
+The same problem appears with the Baby Connectome Project (BCP). It is actually almost ideal scientifically: birth–5 years, 500 planned participants, and explicitly an accelerated longitudinal design, with 285 planned longitudinal and 215 cross-sectional participants. 
+ A curated source reports 500 subjects and 778 scans with structural MRI, fMRI and diffusion MRI. 
+
+But access runs through NDA/its data-use-certification infrastructure rather than simple BALSA public downloading. 
+
+So unfortunately Emma's suggestion of BALSA does not magically turn BCP/HCP-D into unrestricted downloadable developmental datasets.
+
+Why AABC changes my view
+There is a newer development on BALSA that matters here: ConnectomeDB is now being powered through BALSA, and AABC Release 2 is available there as a project-level release rather than merely a publication scene dataset. The AABC page itself lists participant-level longitudinal MR data and provides data-use terms through BALSA. 
+
+The terms appear substantially simpler than the BCP/NDA route: register, agree to the AABC terms, satisfy your own institutional ethics requirements, and download for academic/nonprofit research. 
+
+So in terms of our previous bottleneck:
+
+methodologically suitable + realistically downloadable
+
+AABC may be the first thing we've encountered that scores very well on both.
+
+I would reformulate the application slightly
+Previously we were searching for:
+
+fetal/infant longitudinal image → Matrix-FPCA → brain growth.
+
+That naturally pushed us toward extremely difficult pediatric datasets.
+
+I think we should broaden the application criterion to:
+
+sparse longitudinal neuroimaging
++
+intrinsically matrix-valued representation
+sparse longitudinal neuroimaging+intrinsically matrix-valued representation
+​
+ 
+Then AABC immediately becomes competitive.
+
+A particularly clean paper application could be:
+
+Longitudinal functional connectivity matrices
+Longitudinal functional connectivity matrices
+​
+ 
+with
+
+Y
+i
+j
+∈
+R
+p
+×
+p
+,
+t
+i
+j
+=
+age
+i
+j
+,
+m
+i
+=
+1
+,
+…
+,
+4.
+Y 
+ij
+​
+ ∈R 
+p×p
+ ,t 
+ij
+​
+ =age 
+ij
+​
+ ,m 
+i
+​
+ =1,…,4.
+We estimate
+
+μ
+(
+t
+)
+,
+Φ
+1
+(
+t
+)
+,
+Φ
+2
+(
+t
+)
+,
+…
+μ(t),Φ 
+1
+​
+ (t),Φ 
+2
+​
+ (t),…
+and show what network-to-network connectivity patterns change jointly with aging.
+
+Because baseline ages span roughly 36–90+, while subjects are followed longitudinally, the accelerated design also gives us the familiar functional-data advantage:
+
+subject A       ●----●
+subject B             ●----●----●
+subject C   ●------●
+subject D                        ●---●
+...
+age       36 -------------------------- 90+
+Each individual trajectory is sparse, but the population densely covers age. That is exactly the regime our sparse Matrix-FPCA is supposed to address.
+
+My current shortlist
+AABC Release 2 — strong YES. This is the one I would download a small subset from first. I'd try resting-state connectomes and T1w slices in parallel.
+
+HCP-Development — strong scientific YES, access TBD/problematic. It is developmentally more aligned with your original motivation, but BALSA's study entry by itself is not the individual-level dataset we need.
+
+Baby Connectome Project — perhaps scientifically the best, but NO improvement in access. It still appears to require NDA permission.
+
+HCP Young Adult Retest — not worth it. BALSA has only 45 MRI subjects with a second visit, so essentially 
+n
+≈
+45
+,
+m
+i
+=
+2
+n≈45,m 
+i
+​
+ =2. 
+ That's far too weak compared with AABC.
+
+The biggest change in my recommendation is therefore: I would stop treating infant/fetal imaging as a requirement for the first Matrix-FPCA application. AABC Release 2 looks sufficiently close to our ideal statistical design that I think it deserves a serious test. The connectivity-matrix formulation in particular may actually make the application more naturally matrix-valued than an MRI slice.
