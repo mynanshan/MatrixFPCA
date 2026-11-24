@@ -1,0 +1,8 @@
+status,n_videos,TEST,TRAIN,VAL
+retained,9672,1231,7206,1235
+colour_tint,142,18,104,20
+es_before_ed,98,12,73,13
+landmark_outlier,92,11,66,15
+gap_long,15,3,10,2
+frame_size,6,1,5,0
+gap_short,5,1,1,3

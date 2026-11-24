@@ -1,9 +1,10 @@
 # EchoNet-Dynamic MatFPCA application: plan
 
-Status (2026-11-23): planning only. Metadata were checked on the laptop and three
-videos were decoded; no pipeline code exists yet. The whole pipeline is meant to
-run on the cluster (Compute Canada, R 4.5.0, same conventions as
-`application/olives/run_retfound.sbatch`).
+Status (2026-11-23): preprocessing (`prepare_echonet.py`) and the Phase-0
+go/no-go checks (`explore_echonet.py`) are implemented and run on the cluster;
+see `README.md` for current results. Phase 0 is a **go**. Next: R conversion
+and the pilot MatFPCA fit. The whole pipeline runs on the cluster (Compute
+Canada, R 4.5.0, same conventions as `application/olives/run_retfound.sbatch`).
 
 ## 0. Why this dataset
 
@@ -103,8 +104,14 @@ peak correlation < 0.8) and exclude those videos from this variant.
    measure colour content per video: the fraction of in-sector pixels where
    max(RGB) − min(RGB) > 20. Report the distribution, and exclude or flag
    videos with substantial colour Doppler.
-2. **Sector mask:** pixels that are non-zero in at least 50% of training
-   videos' mean frames (same idea as the ADNI consensus brain mask). Outside the
+   *Finding (2026-11-23):* there is no colour Doppler. Colour pixels are
+   the static overlays (apex marker at rows 1–5, depth-scale ticks on the
+   right fan edge) plus a few videos with a sepia tint over the whole
+   frame. The overlays are removed by a per-video fan mask (largest bright
+   component, convex hull); the tint is harmless after the RGB mean.
+2. **Sector mask:** *(implemented as: pixel inside the per-video fan, after
+   any alignment, for ≥ 90% of TRAIN videos.)* Originally: pixels that are
+   non-zero in at least 50% of training videos' mean frames (same idea as the ADNI consensus brain mask). Outside the
    mask, set pixels to 0 and leave them out of all metrics. Check whether the
    depth-scale ticks fall inside the mask. They are static, so they can only
    feed constant modes, but this is worth stating.
@@ -114,7 +121,11 @@ peak correlation < 0.8) and exclude those videos from this variant.
    Sensitivity: no normalisation.
 4. **Resolution:** 112 × 112 for the main fit. A 2 × 2 block average to
    56 × 56 for pilots and for the dense/sparse comparison grid.
-5. **No deformable registration.** The A4C acquisition and the authors'
+5. **No deformable registration.** *(Update: measured misalignment is
+   larger than wall motion: LV centre spreads ~15 px horizontally and ~24 px
+   vertically, axis tilt −2° to 27°, axis length 45–75 px (5–95%). The
+   alignment is therefore a preprocessing switch, `--align none | rigid |
+   similarity`, compared in README.)* The A4C acquisition and the authors'
    cropping already standardise the view.
    Optional sensitivity, LV-centred alignment: apply one similarity transform
    (rotation, scale, translation) per video, taken from the **ED** long-axis
