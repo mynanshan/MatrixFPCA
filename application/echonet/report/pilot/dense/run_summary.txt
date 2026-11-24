@@ -1,0 +1,7 @@
+design: dense | train subjects: 500 | train frames: 8939 | image 56x56 | mask 1006 px
+fit time: 51 s | ranks I x J x K = 56 x 56 x 6 | sigma2 = 0.002173
+temporal variance in dynamic modes: 38.2%  (go if >= 10%)
+EF TEST R2, MatFPCA sparse frames (best k): 0.280
+EF TEST R2, MatFPCA dense frames (best k):  0.303
+EF TEST R2, static ED-frame PCA (best k):   0.093
+score implementation check (relative diff): 6.3e-16

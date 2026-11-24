@@ -1,9 +1,11 @@
 # EchoNet-Dynamic MatFPCA application: plan
 
-Status (2026-11-23): preprocessing (`prepare_echonet.py`) and the Phase-0
-go/no-go checks (`explore_echonet.py`) are implemented and run on the cluster;
-see `README.md` for current results. Phase 0 is a **go**. Next: R conversion
-and the pilot MatFPCA fit. The whole pipeline runs on the cluster (Compute
+Status (2026-11-23): preprocessing, Phase-0 checks, RDS conversion and the
+pilot fits (56 × 56, n = 500, sparse and dense) are done; all go/no-go checks
+pass (see `README.md`). Pilot lesson: use PCA of the MatFPCA-predicted video
+(full score tensor) as the EF representation, not the top product-FPC
+scores, which are individually tiny (rank-one eigenimages). Next: main fits
+at 112 × 112, n = 2,000. The whole pipeline runs on the cluster (Compute
 Canada, R 4.5.0, same conventions as `application/olives/run_retfound.sbatch`).
 
 ## 0. Why this dataset

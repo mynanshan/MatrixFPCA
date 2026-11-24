@@ -1,0 +1,14 @@
+quantity,value,value2
+"temporal eigenfunction 1, |cos|",0.999784684699637,
+"temporal eigenfunction 2, |cos|",0.997780909464085,
+"temporal eigenfunction 3, |cos|",0.98952961772587,
+"temporal eigenfunction 4, |cos|",0.954014968898791,
+"row leading 5-dim subspace, mean / min principal cosine",0.972175092769651,0.876199684213011
+"row leading 10-dim subspace, mean / min principal cosine",0.996777189254484,0.983519964369686
+"row leading 20-dim subspace, mean / min principal cosine",0.997441838398653,0.97709454582744
+"column leading 5-dim subspace, mean / min principal cosine",0.990970602556744,0.97296305966341
+"column leading 10-dim subspace, mean / min principal cosine",0.990422944902462,0.948578680784457
+"column leading 20-dim subspace, mean / min principal cosine",0.985949835017991,0.755429337250491
+"mean video, relative L2 difference",0.0309220996268241,
+temporal variance in dynamic modes (sparse fit / dense fit),0.34091553289224,0.381760471812418
+TEST scores: R2 of dense-fit FPC1-50 on sparse-fit FPC1-50 (mean / min),0.989580271655709,0.854889176495363
