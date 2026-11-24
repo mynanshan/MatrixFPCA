@@ -1,0 +1,14 @@
+quantity,value
+dynamic PCs used (d),5
+share of dynamic-part variance in d PCs,0.157076973331426
+curve smoothing df,3
+iterations,30
+share of d-dim variance: straight line (PC1),0.294506719858462
+share of d-dim variance: principal curve,0.309626891293257
+TEST Spearman with EF: dynamic PC1,0.347078346649883
+TEST Spearman with EF: curve position lambda,0.346242015339424
+"TEST EF R2, spline of dynamic PC1",0.133515185319904
+"TEST EF R2, spline of lambda",0.134496714613816
+"TEST EF R2, linear in all d PCs",0.150876884961661
+TEST AUC (EF < 40%): dynamic PC1,0.805756206336216
+TEST AUC (EF < 40%): lambda,0.792471740858034

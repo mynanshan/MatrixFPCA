@@ -620,6 +620,77 @@ The "reduced − normal" map is therefore the normal pattern with the sign
 flipped. The map predicted from 3–8 frames correlates **0.95** with the
 map from all frames.
 
+**(d) Is there a single "path" through the dynamic part?** (`principal_curve.png`,
+`principal_curve_summary.csv`, `principal_curve_df_sensitivity.csv`)
+
+A *principal curve* is a smooth curve through the middle of a point cloud,
+a nonlinear version of the first principal component. Each heart is then
+summarised by one number: its position λ along the curve, from 0 to 1.
+- **Data.** The first 5 dynamic eigen-video scores (TRAIN). They hold 16% of
+  the dynamic-part variance; the rest is spread over many small components.
+- **Method.** Hastie–Stuetzle iterations: a cubic smoothing spline per
+  coordinate, then projection of every heart onto the curve. The ends are
+  trimmed at the 1% and 99% quantiles so they do not bend towards a few
+  outlying hearts. λ is oriented so that larger λ means higher EF.
+
+![principal curve](report/main/sparse/principal_curve.png)
+
+| Summary of the dynamic part (TEST) | Spearman with EF | EF R² (spline, 1 number) | AUC for EF < 40% |
+|---|---:|---:|---:|
+| dynamic PC1 (straight line) | 0.35 | 0.134 | 0.81 |
+| principal-curve position λ (smoothing df 3) | 0.35 | 0.134 | 0.79 |
+| all 5 dynamic PCs, linear | – | 0.151 | – |
+
+| Smoothing df | 2 | 3 | 4 | 6 |
+|---|---:|---:|---:|---:|
+| TEST Spearman(λ, EF) | 0.35 | 0.35 | 0.30 | 0.25 |
+
+**Reading:** the dynamic-score cloud is close to an ellipse, so a stiff curve
+is almost the PC1 line. It explains 31% of the 5-d variance, against 29% for
+the line. Making the curve more flexible lets it fit more variance, but it
+then follows directions that are not related to EF, so the EF correlation
+drops. The conclusion is that, at this resolution, contraction strength
+varies along a nearly *straight* direction: there is no hidden nonlinear
+"disease path" in the leading dynamic modes. Low-EF hearts (red dots) sit
+at the low end of dynamic PC1, but they overlap with normal hearts there.
+This matches §5.4: EF needs many components (k = 100), not one.
+
+**(e) Animations.** The cardiac phase runs from ED (t = 0) to ES (t = 1)
+and is then played backwards, so each loop looks like a beat (only systole
+is modelled).
+
+*Average TEST heart by EF group*, observed (all frames, linearly
+interpolated onto the phase grid) vs MatFPCA (3–8 frames per heart). In the
+right column, red means the reduced-EF heart is brighter than the normal
+heart at that phase:
+
+![EF groups, animated](report/main/sparse/ef_groups.gif)
+
+What to look for:
+- **ED (start).** The groups already differ a little, mostly along the
+  septum (a blue band: the bright septal wall sits slightly differently in
+  the dilated reduced-EF hearts, even after size alignment).
+- **Moving to ES.** In normal hearts the walls move in and the valve plane
+  moves up towards the apex. In reduced-EF hearts this happens much less, so
+  the difference panel grows: blue in the cavity (it stays dark and open)
+  and red at the base (the bright valve region stays low).
+- **Agreement.** The MatFPCA row reproduces the observed row throughout
+  the phase, not just at ED and ES.
+
+*Contraction strength* (dynamic eigen-video 1): the mean video and
+mean ∓ 2 SD. The three panels share the same static part; only the motion
+differs. At +2 SD the cavity is wide at ED and closes at ES; at −2 SD it is
+already narrower at ED and barely changes. (Small black patches at +2 SD
+are pixels clipped to the display range.)
+
+![contraction strength, animated](report/main/sparse/contraction_strength.gif)
+
+*Along the principal curve*: hearts at five positions along the curve
+(static appearance held at the average). The typical EF of TRAIN hearts near
+each position rises from about 49% to 63%:
+
+![principal curve, animated](report/main/sparse/principal_curve.gif)
+
 ### 5.6 Reconstruction of held-out frames (TEST)
 
 | Method | RMSE (held-out frames) | Correlation | Motion correlation |
@@ -669,13 +740,11 @@ n = 500 neither is needed.
   alongside.
 - **Kept as sensitivity analyses:** `rigid` alignment (keeps LV size, for
   ESV/EDV) and `none`.
-- **Next:**
-  1. Principal curve through the dynamic scores, coloured by EF.
-  2. A short animated version of `ef_groups.png` and dynamic PC1 (GIF or
-     strip over 11 phases).
-  3. Optionally, the `rigid` and `none` variants.
-  4. Optionally, binned smoothing in `fit_matfcov` (§5.7) if larger n is
-     wanted.
+- **Done since the main fit:** principal curve through the dynamic scores
+  (§5.5d: nearly straight, no gain over dynamic PC1) and animations (§5.5e).
+- **Next (optional):**
+  1. The `rigid` and `none` variants.
+  2. Binned smoothing in `fit_matfcov` (§5.7) if larger n is wanted.
 
 ## 7. How to reproduce
 
@@ -722,7 +791,7 @@ Data are expected in `data/EchoNet-Dynamic/` (`Videos/`, `FileList.csv`,
 | Main / sample-size outputs (in `output/`, not tracked) | Content |
 |---|---|
 | `export_main112/`, `export_n56/` | exports as above; `subjects.csv` also has `train_rank`, `appearance_cluster`, `ef_quintile`; `sample_check.csv`, `sample_strata.csv`, `sample_representativeness.png` |
-| `main112_{sparse,dense}/` | as the pilot, plus `prediction_all_k.csv` (EF/ESV/EDV, every k), `prediction_selected_k.csv` (k chosen on VAL), `eigen_video_interpretation.csv` |
+| `main112_{sparse,dense}/` | as the pilot, plus `prediction_all_k.csv` (EF/ESV/EDV, every k), `prediction_selected_k.csv` (k chosen on VAL), `eigen_video_interpretation.csv`, `principal_curve_*.csv`, `dynamic_scores.rds` (dynamic eigen-video scores, all splits), `figures/*.gif` (animations; need ImageMagick `convert`) |
 | `nstudy_n{250,500,500b,1000,2000}/` | sparse fits on nested stratified TRAIN samples (n500b = ranks 501–1,000) |
 
 Tracked results: `report/` (Phase 0), `report/pilot/` (pilot fits),

@@ -21,7 +21,7 @@
 #   7. reconstruction of every TEST frame from the sparse frames;
 #   8. interpretation: spatial and temporal modes, principal "eigen-videos"
 #      (all and dynamic part only) with their correlates, EF-group means;
-#   9. figures.
+#   9. figures; principal curve through the dynamic part; GIF animations.
 
 suppressPackageStartupMessages({
   library(data.table)
@@ -686,6 +686,223 @@ mtext(sprintf("TEST hearts by EF group: reduced EF < 40%%, normal EF >= 55%%; co
               agree), outer = TRUE, cex = 0.95)
 dev.off()
 writeLines(sprintf("%.4f", agree), file.path(args$output, "ef_group_change_agreement.txt"))
+
+# ------------------------------------------------ principal curve, animations ----
+# (d) principal curve through the dynamic part. The leading dynamic
+#     eigen-video PCs are not independent "knobs": hearts move along a curved
+#     path in that space (weak contraction -> strong contraction, with the
+#     timing changing on the way). A Hastie-Stuetzle principal curve (cubic
+#     smoothing spline per coordinate, df = pc_df) fitted on TRAIN gives each
+#     heart a single arc-length position lambda in [0, 1], oriented so that
+#     larger lambda = higher EF.
+# (e) animations (GIF, ImageMagick `convert`): the systolic phase runs ED -> ES
+#     and is then played backwards, so the loop resembles a beat.
+log_message("Principal curve through the dynamic scores...")
+pc_d <- 5L; pc_df <- 3
+dyn_tr <- scores_full$sparse$TRAIN[, !static_cols, drop = FALSE]
+dyn_m <- colMeans(dyn_tr)
+dyn_sv <- svd(sweep(dyn_tr, 2, dyn_m), nu = 0, nv = pc_d)
+dyn_tot <- sum(apply(dyn_tr, 2, var))
+dyn_Z <- lapply(scores_full$sparse, function(S) sweep(S[, !static_cols, drop = FALSE], 2, dyn_m) %*% dyn_sv$v)
+pc_d_share <- sum(apply(dyn_Z$TRAIN, 2, var)) / dyn_tot
+
+project_polyline <- function(X, G) {      # exact projection on a polyline
+  arc <- c(0, cumsum(sqrt(rowSums(diff(G)^2))))
+  best_d <- rep(Inf, nrow(X)); best_l <- numeric(nrow(X))
+  for (s in seq_len(nrow(G) - 1L)) {
+    a <- G[s, ]; b <- G[s + 1L, ]; ab <- b - a; L2 <- sum(ab^2)
+    u <- pmin(pmax(drop(sweep(X, 2, a) %*% ab) / L2, 0), 1)
+    d2 <- rowSums((sweep(X, 2, a) - u %o% ab)^2)
+    better <- d2 < best_d
+    best_d[better] <- d2[better]; best_l[better] <- arc[s] + u[better] * sqrt(L2)
+  }
+  list(lambda = best_l, d2 = best_d, arc = arc)
+}
+principal_curve <- function(X, df, iter = 30L, ngrid = 300L, trim = 0.01) {
+  # the curve is evaluated between the trim and 1 - trim quantiles of lambda
+  # only, which stops the ends from hooking into a few outlying hearts
+  lam <- drop(sweep(X, 2, colMeans(X)) %*% svd(sweep(X, 2, colMeans(X)), nu = 0, nv = 1)$v)
+  d_old <- Inf
+  for (it in seq_len(iter)) {
+    lg <- seq(quantile(lam, trim), quantile(lam, 1 - trim), length.out = ngrid)
+    G <- vapply(seq_len(ncol(X)), function(j) predict(smooth.spline(lam, X[, j], df = df), lg)$y,
+                numeric(ngrid))
+    pr <- project_polyline(X, G)
+    lam <- pr$lambda; d <- mean(pr$d2)
+    if (abs(d_old - d) < 1e-5 * d) break
+    d_old <- d
+  }
+  list(G = G, iter = it, d2 = d)
+}
+saveRDS(list(dyn_Z = dyn_Z, y = y, ids = ids_by), file.path(args$output, "dynamic_scores.rds"))
+# sensitivity to the smoothing df (TRAIN fit, TEST Spearman with EF)
+pc_sens <- rbindlist(lapply(c(2, 3, 4, 6), function(df) {
+  pcv <- principal_curve(dyn_Z$TRAIN, df)
+  l_tr <- project_polyline(dyn_Z$TRAIN, pcv$G)$lambda
+  l_te <- project_polyline(dyn_Z$TEST, pcv$G)$lambda * sign(cor(l_tr, y$TRAIN))
+  data.table(df = df, iterations = pcv$iter, mean_d2_train = pcv$d2,
+             spearman_EF_test = cor(l_te, y$TEST, method = "spearman"))
+}))
+fwrite(pc_sens, file.path(args$output, "principal_curve_df_sensitivity.csv"))
+print(pc_sens)
+pcurve <- principal_curve(dyn_Z$TRAIN, pc_df)
+proj_all <- lapply(dyn_Z, function(Z) project_polyline(Z, pcurve$G))
+L <- max(proj_all$TRAIN$arc)
+lam_by <- lapply(proj_all, function(pr) pr$lambda / L)
+if (cor(lam_by$TRAIN, y$TRAIN) < 0) {               # orient: larger lambda = higher EF
+  pcurve$G <- pcurve$G[nrow(pcurve$G):1, ]
+  lam_by <- lapply(lam_by, function(l) 1 - l)
+}
+curve_at <- function(l) {                           # curve point at normalised arc length l
+  arc <- c(0, cumsum(sqrt(rowSums(diff(pcurve$G)^2)))) / L
+  apply(pcurve$G, 2, function(g) approx(arc, g, xout = l)$y)
+}
+# how much of the 5-d dynamic score cloud the line (PC1) and the curve explain
+tot_d <- sum(apply(dyn_Z$TRAIN, 2, var)) * (nrow(dyn_Z$TRAIN) - 1) / nrow(dyn_Z$TRAIN)
+line_expl <- var(dyn_Z$TRAIN[, 1]) * (nrow(dyn_Z$TRAIN) - 1) / nrow(dyn_Z$TRAIN) / tot_d
+curve_expl <- 1 - mean(proj_all$TRAIN$d2) / tot_d
+# EF from the 1-d summaries: natural spline (df 3) fitted on TRAIN, TEST reported
+r2_1d <- function(xtr, xte) {
+  b <- splines::ns(xtr, df = 3)
+  f <- lm(y$TRAIN ~ b)
+  pr <- cbind(1, predict(b, xte)) %*% coef(f)
+  1 - sum((y$TEST - pr)^2) / sum((y$TEST - mean(y$TEST))^2)
+}
+z1 <- lapply(dyn_Z, function(Z) Z[, 1] * sign(cor(dyn_Z$TRAIN[, 1], y$TRAIN)))
+lm5 <- lm(y$TRAIN ~ dyn_Z$TRAIN)
+r2_5 <- 1 - sum((y$TEST - cbind(1, dyn_Z$TEST) %*% coef(lm5))^2) / sum((y$TEST - mean(y$TEST))^2)
+pc_summary <- data.table(
+  quantity = c("dynamic PCs used (d)", "share of dynamic-part variance in d PCs",
+               "curve smoothing df", "iterations",
+               "share of d-dim variance: straight line (PC1)", "share of d-dim variance: principal curve",
+               "TEST Spearman with EF: dynamic PC1", "TEST Spearman with EF: curve position lambda",
+               "TEST EF R2, spline of dynamic PC1", "TEST EF R2, spline of lambda",
+               "TEST EF R2, linear in all d PCs",
+               "TEST AUC (EF < 40%): dynamic PC1", "TEST AUC (EF < 40%): lambda"),
+  value = c(pc_d, pc_d_share, pc_df, pcurve$iter, line_expl, curve_expl,
+            cor(z1$TEST, y$TEST, method = "spearman"), cor(lam_by$TEST, y$TEST, method = "spearman"),
+            r2_1d(z1$TRAIN, z1$TEST), r2_1d(lam_by$TRAIN, lam_by$TEST), r2_5,
+            auc(y$TEST < 40, -z1$TEST), auc(y$TEST < 40, -lam_by$TEST)))
+fwrite(pc_summary, file.path(args$output, "principal_curve_summary.csv"))
+print(pc_summary)
+fwrite(data.table(id = all_ids, split = rep(names(ids_by), lengths(ids_by)),
+                  lambda = unlist(lam_by), dist2 = unlist(lapply(proj_all, `[[`, "d2")),
+                  EF = cov_dt$EF),
+       file.path(args$output, "principal_curve_positions.csv"))
+
+# videos along the curve: static part at its TRAIN mean, dynamic part at the curve point
+m_all <- colMeans(scores_full$sparse$TRAIN)
+curve_video <- function(l) {
+  v <- m_all; v[!static_cols] <- dyn_m + drop(dyn_sv$v %*% curve_at(l))
+  score_video(v) + mu_arr
+}
+pc_pos <- quantile(lam_by$TRAIN, c(0.05, 0.25, 0.5, 0.75, 0.95), names = FALSE)
+pc_ef <- vapply(pc_pos, function(l) {             # typical EF of TRAIN hearts near that position
+  near <- order(abs(lam_by$TRAIN - l))[1:50]; median(y$TRAIN[near]) }, 1)
+pc_vids <- lapply(pc_pos, curve_video)
+
+ef_col <- function(e) colorRampPalette(c("#b2182b", "#f4a582", "#d9d9d9", "#92c5de", "#2166ac"))(100)[
+  pmin(pmax(round((e - 15) / (75 - 15) * 99) + 1, 1), 100)]
+png(file.path(fig_dir, "principal_curve.png"), 1700, 900, res = 110)
+layout(rbind(rep(1:3, each = 5), rep(4:8, each = 3)), heights = c(1.1, 1))
+par(mar = c(4, 4, 2.5, 1))
+Gs <- pcurve$G
+for (pr in list(c(1, 2), c(1, 3))) {
+  plot(dyn_Z$TEST[, pr], pch = 16, cex = 0.45, col = adjustcolor(ef_col(y$TEST), 0.7),
+       xlab = sprintf("dynamic PC%d score", pr[1]), ylab = sprintf("dynamic PC%d score", pr[2]),
+       main = sprintf("TEST hearts (colour = EF) and the principal curve: PC%d vs PC%d", pr[1], pr[2]),
+       cex.main = 0.85)
+  lines(Gs[, pr], lwd = 3)
+  pts <- t(vapply(pc_pos, curve_at, numeric(pc_d)))
+  points(pts[, pr], pch = 21, bg = "white", cex = 1.6, lwd = 2)
+  text(pts[, pr], labels = 1:5, cex = 0.7)
+}
+plot(lam_by$TEST, y$TEST, pch = 16, cex = 0.45, col = adjustcolor("#1f3f8f", 0.4),
+     xlab = "position along the curve, lambda", ylab = "true EF (%)",
+     main = sprintf("EF vs curve position (TEST): Spearman %.2f",
+                    cor(lam_by$TEST, y$TEST, method = "spearman")), cex.main = 0.9)
+lines(lowess(lam_by$TEST, y$TEST, f = 0.3), lwd = 2, col = "#d95f02")
+abline(v = pc_pos, lty = 3, col = "grey50"); abline(h = 40, lty = 3, col = "grey70")
+mtext(1:5, side = 3, at = pc_pos, line = -1.2, cex = 0.7)
+par(mar = c(0.5, 0.5, 3, 0.5))
+chg_l <- lapply(pc_vids, function(v) { z <- v[, , nt] - v[, , 1]; z[!mask] <- NA; z })
+cl2 <- c(-1, 1) * max(abs(unlist(chg_l)), na.rm = TRUE)
+for (i in seq_along(pc_pos))
+  show(chg_l[[i]], cl2, div_col, sprintf("point %d: lambda = %.2f\nES - ED change (typical EF %.0f%%)",
+                                         i, pc_pos[i], pc_ef[i]))
+dev.off()
+
+# animations ---------------------------------------------------------------
+gif_order <- c(rep(1L, 8L), 2:nt, rep(nt, 8L), (nt - 1L):2)
+make_gif <- function(file, width, height, draw, delay = 7) {
+  tmp <- file.path(tempdir(), sub("\\.gif$", "", basename(file)))
+  dir.create(tmp, showWarnings = FALSE)
+  pngs <- file.path(tmp, sprintf("f%02d.png", seq_len(nt)))
+  for (g in seq_len(nt)) {
+    png(pngs[g], width, height, res = 100); draw(g); dev.off()
+  }
+  status <- system2("convert", c("-delay", delay, "-loop", "0", pngs[gif_order],
+                                 "-layers", "Optimize", file))
+  unlink(tmp, recursive = TRUE)
+  if (status != 0L) warning("convert failed for ", file)
+}
+phase_label <- function(g) mtext(sprintf("cardiac phase t = %.2f   (0 = end-diastole, 1 = end-systole; played forward, then backward)",
+                                         t_grid[g]), side = 1, outer = TRUE, line = 0.3, cex = 0.8)
+masked <- function(z) { z[!mask] <- NA; z }
+
+# (e1) contraction strength = dynamic eigen-video PC1
+e1 <- ev$dynamic[[1]]
+r1 <- interp_tab[part == "dynamic" & pc == 1]
+lim_a <- range(mu[, mvec]); dl1 <- c(-1, 1) * quantile(abs(e1$vid[rep(mask, nt)]), 0.995)
+make_gif(file.path(fig_dir, "contraction_strength.gif"), 1000, 320, function(g) {
+  par(mfrow = c(1, 4), mar = c(0.3, 0.3, 2.6, 0.3), oma = c(1.6, 0, 1.8, 0))
+  show(masked(mu_arr[, , g] - 2 * e1$vid[, , g]), lim_a, gray_col, "mean - 2 SD\n(weaker contraction)")
+  show(masked(mu_arr[, , g]), lim_a, gray_col, "mean video")
+  show(masked(mu_arr[, , g] + 2 * e1$vid[, , g]), lim_a, gray_col, "mean + 2 SD\n(stronger contraction)")
+  show(masked(e1$vid[, , g]), dl1, div_col, "+1 SD deviation\n(red brighter, blue darker)")
+  mtext(sprintf("Dynamic eigen-video 1 = contraction strength (%.1f%% of video variance; Spearman with EF %+.2f)",
+                100 * r1$variance_share, r1$rho_EF), outer = TRUE, cex = 0.85, line = 0.4)
+  phase_label(g)
+})
+
+# (e2) walking along the principal curve
+lim_c <- range(unlist(lapply(pc_vids, function(v) v[rep(mask, nt)])))
+make_gif(file.path(fig_dir, "principal_curve.gif"), 1150, 300, function(g) {
+  par(mfrow = c(1, 5), mar = c(0.3, 0.3, 2.6, 0.3), oma = c(1.6, 0, 1.8, 0))
+  for (i in seq_along(pc_vids))
+    show(masked(pc_vids[[i]][, , g]), lim_c, gray_col,
+         sprintf("point %d (lambda = %.2f)\ntypical EF %.0f%%", i, pc_pos[i], pc_ef[i]))
+  mtext("Hearts along the principal curve of the dynamic part (static appearance held at the average)",
+        outer = TRUE, cex = 0.85, line = 0.4)
+  phase_label(g)
+})
+
+# (e3) EF groups over the whole systole: observed (all frames, linearly
+#      interpolated onto the phase grid) vs MatFPCA (from 3-8 frames)
+grp_vid <- list(obs = list(), pred = list())
+for (gname in c("reduced", "normal")) {
+  ids_g <- ids_by$TEST[grp == gname]
+  acc <- matrix(0, nt, sum(mvec))
+  for (s in ids_g) acc <- acc + interp_weights(t_grid[t_idx_all[[s]]], t_grid) %*% frame_mat(raw[[s]])
+  grp_vid$obs[[gname]] <- acc / length(ids_g)
+  v <- score_video(colMeans(scores_full$sparse$TEST[grp == gname, , drop = FALSE])) + mu_arr
+  grp_vid$pred[[gname]] <- t(matrix(v, p * q))[, mvec]
+}
+lim_e <- range(unlist(grp_vid))
+dd <- lapply(grp_vid, function(G) G$reduced - G$normal)
+dl3 <- c(-1, 1) * quantile(abs(unlist(dd)), 0.995)
+make_gif(file.path(fig_dir, "ef_groups.gif"), 760, 560, function(g) {
+  par(mfrow = c(2, 3), mar = c(0.3, 0.3, 2.2, 0.3), oma = c(1.6, 2.2, 1.8, 0))
+  for (src in c("obs", "pred")) {
+    show(to_img(grp_vid[[src]]$reduced[g, ]), lim_e, gray_col, sprintf("reduced EF < 40%% (n=%d)", sum(grp == "reduced")))
+    show(to_img(grp_vid[[src]]$normal[g, ]), lim_e, gray_col, sprintf("normal EF >= 55%% (n=%d)", sum(grp == "normal")))
+    show(to_img(dd[[src]][g, ]), dl3, div_col, "reduced - normal")
+    mtext(if (src == "obs") "observed, all frames" else "MatFPCA, 3-8 frames", side = 2, outer = TRUE,
+          at = if (src == "obs") 0.75 else 0.25, line = 0.6, cex = 0.75)
+  }
+  mtext("Average TEST heart by EF group", outer = TRUE, cex = 0.85, line = 0.4)
+  phase_label(g)
+})
 
 # ---------------------------------------------------------------- summary ----
 sel <- function(m) ef_sel[target == "EF" & method == m]

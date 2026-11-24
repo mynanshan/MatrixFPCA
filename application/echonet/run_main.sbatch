@@ -27,8 +27,8 @@ Rscript application/echonet/compare_pilot_fits.R $OUT/main112_sparse $OUT/main11
   $REPORT/sparse_vs_dense.csv
 cp $EXPORT/{sample_check.csv,sample_strata.csv,sample_representativeness.png} $REPORT/
 for design in sparse dense; do
-  cp $OUT/main112_$design/{run_summary.txt,ef_prediction.csv,prediction_selected_k.csv,temporal_diagnostics.csv,reconstruction_summary.csv,score_correlations.csv,eigen_video_interpretation.csv,ef_group_change_agreement.txt} $REPORT/$design/
+  cp $OUT/main112_$design/{run_summary.txt,ef_prediction.csv,prediction_selected_k.csv,temporal_diagnostics.csv,reconstruction_summary.csv,score_correlations.csv,eigen_video_interpretation.csv,ef_group_change_agreement.txt,principal_curve_summary.csv,principal_curve_df_sensitivity.csv} $REPORT/$design/
   head -51 $OUT/main112_$design/product_fpcs.csv > $REPORT/$design/product_fpcs_top50.csv
 done
-cp $OUT/main112_sparse/figures/*.png $REPORT/sparse/
+cp $OUT/main112_sparse/figures/*.{png,gif} $REPORT/sparse/
 cp $OUT/main112_dense/figures/temporal_modes.png $REPORT/dense/
