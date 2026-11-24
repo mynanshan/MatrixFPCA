@@ -15,10 +15,13 @@
 #      as application/adni/adni_matfpca.R);
 #   4. temporal diagnostics (ADNI constant-vs-dynamic screen);
 #   5. scores (BLUP) for TRAIN/VAL/TEST from sparse and from dense frames;
-#   6. EF prediction: ridge on the leading product-FPC scores, penalty tuned
-#      on VAL, evaluated on TEST; PCA baselines on the same subjects;
+#   6. EF / ESV / EDV prediction: ridge on MatFPCA representations and on PCA
+#      baselines; penalty and number of components k chosen on VAL, TEST
+#      reported;
 #   7. reconstruction of every TEST frame from the sparse frames;
-#   8. figures.
+#   8. interpretation: spatial and temporal modes, principal "eigen-videos"
+#      (all and dynamic part only) with their correlates, EF-group means;
+#   9. figures.
 
 suppressPackageStartupMessages({
   library(data.table)
@@ -47,6 +50,11 @@ defaults <- list(
   mode_pve = 0.95,
   n_fpcs = "10,20,50,100,200,500",
   seed = 20261124L,
+  n_train = 0L,        # use TRAIN subjects with train_rank in (train_skip, train_skip + n_train]
+  train_skip = 0L,     # (0 = all exported TRAIN subjects)
+  n_fit = 0L,          # fit mean + covariance on TRAIN subjects with train_rank in
+  fit_skip = 0L,       # (fit_skip, fit_skip + n_fit]; 0 = all TRAIN. The EF regression
+                       # and baselines always use all selected TRAIN subjects.
   cache = TRUE
 )
 parse_options <- function(d) {
@@ -76,6 +84,12 @@ writeLines(capture.output(str(args)), file.path(args$output, "options.txt"))
 # ------------------------------------------------------------------- data ----
 frames <- fread(file.path(args$input, "frames_rds.csv"))
 subjects <- fread(file.path(args$input, "subjects.csv"))
+if (args$n_train > 0L) {
+  subjects <- subjects[split != "TRAIN" |
+                         (train_rank > args$train_skip & train_rank <= args$train_skip + args$n_train)]
+  stopifnot(sum(subjects$split == "TRAIN") == args$n_train)
+}
+frames <- frames[id %in% subjects$id]
 mask <- as.matrix(fread(file.path(args$input, "mask.csv"), header = FALSE)) == 1
 p <- nrow(mask); q <- ncol(mask)
 t_grid <- seq(0, 1, by = 0.02)
@@ -93,14 +107,15 @@ names(raw) <- subjects$id
 t_idx_all <- split(frames$t_idx, factor(frames$id, levels = subjects$id))
 stopifnot(all(vapply(raw, function(x) dim(x)[3], 1L) == lengths(t_idx_all)))
 
-# sparse subset of frames per subject (TRAIN, VAL and TEST all get one, so the
-# sparse-design evaluation is identical across splits)
-set.seed(args$seed)
-sparse_pos <- lapply(t_idx_all, function(ti) {
+# sparse subset of frames per subject (TRAIN, VAL and TEST all get one). The
+# draw is seeded per subject, so a subject keeps the same frames whichever
+# other subjects are in the run (needed to compare fits on different samples).
+sparse_pos <- Map(function(ti, sid) {
+  set.seed(args$seed + strtoi(substr(sid, 3L, 9L), 16L))
   n <- length(ti)
   m <- min(n, sample(args$m_min:args$m_max, 1L))
   sort(sample.int(n, m))
-})
+}, t_idx_all, names(t_idx_all))
 
 # ---------------------------------------------------------- mean function ----
 fit_mean_function <- function(times, values, subject_ids, df) {
@@ -115,7 +130,11 @@ mean_on_grid <- function(model, times) {
   cbind(1, splines::ns(times, knots = model$knots, intercept = FALSE,
                        Boundary.knots = c(0, 1))) %*% model$coef
 }
-train_ids <- subjects[split == "TRAIN", id]
+train_ids <- if (args$n_fit > 0L) {
+  subjects[split == "TRAIN" & train_rank > args$fit_skip &
+             train_rank <= args$fit_skip + args$n_fit, id]
+} else subjects[split == "TRAIN", id]
+if (args$n_fit > 0L) stopifnot(length(train_ids) == args$n_fit)
 train_pos <- if (args$design == "sparse") sparse_pos[train_ids] else
   lapply(t_idx_all[train_ids], seq_along)
 mean_times <- unlist(Map(function(ti, pos) t_grid[ti[pos]], t_idx_all[train_ids], train_pos))
@@ -268,6 +287,9 @@ sc_out <- merge(sc_out, subjects[, .(id, EF, ESV, EDV)], by = "id")
 fwrite(sc_out, file.path(args$output, "scores.csv"))
 
 # ------------------------------------------------------- EF prediction -------
+# Every representation is reduced to k features (PCA on TRAIN, or the top-k
+# product-FPC scores), then ridge regression; the penalty and k are both
+# chosen on VAL (RMSE) and TEST is reported. Targets: EF, ESV and EDV.
 auc <- function(y, s) {
   r <- rank(c(s[y], s[!y]))
   (sum(r[seq_len(sum(y))]) - sum(y) * (sum(y) + 1) / 2) / (sum(y) * sum(!y))
@@ -275,31 +297,41 @@ auc <- function(y, s) {
 ridge_eval <- function(Ztr, ytr, Zva, yva, Zte, yte) {
   m <- colMeans(Ztr); s <- apply(Ztr, 2, sd); s[s == 0] <- 1
   f <- function(Z) cbind(1, sweep(sweep(Z, 2, m), 2, s, "/"))
-  A <- f(Ztr); best <- NULL
+  A <- f(Ztr); AtA <- crossprod(A); Aty <- crossprod(A, ytr); Ava <- f(Zva); best <- NULL
   for (lam in 10^seq(-2, 4, by = 0.5)) {
-    b <- solve(crossprod(A) + diag(c(0, rep(lam, ncol(Ztr)))), crossprod(A, ytr))
-    rm <- sqrt(mean((f(Zva) %*% b - yva)^2))
+    b <- solve(AtA + diag(c(0, rep(lam, ncol(Ztr)))), Aty)
+    rm <- sqrt(mean((Ava %*% b - yva)^2))
     if (is.null(best) || rm < best$rm) best <- list(rm = rm, lam = lam, b = b)
   }
   pr <- as.vector(f(Zte) %*% best$b)
   list(R2 = 1 - sum((yte - pr)^2) / sum((yte - mean(yte))^2), MAE = mean(abs(yte - pr)),
-       AUC_EF40 = auc(yte < 40, -pr), lambda = best$lam, pred = pr)
+       lambda = best$lam, val_rmse = best$rm, pred = pr)
 }
-pca_scores <- function(Ftr, Flist, k) {
-  m <- colMeans(Ftr)
-  k <- min(k, nrow(Ftr) - 1L)
-  sv <- svd(sweep(Ftr, 2, m), nu = 0, nv = k)
+pca_all <- function(Flist, kmax) {     # PCA scores (TRAIN-fitted) for every split
+  m <- colMeans(Flist$TRAIN)
+  kmax <- min(kmax, nrow(Flist$TRAIN) - 1L, ncol(Flist$TRAIN))
+  sv <- svd(sweep(Flist$TRAIN, 2, m), nu = 0, nv = kmax)
   lapply(Flist, function(F) sweep(F, 2, m) %*% sv$v)
 }
-y <- lapply(ids_by, function(ids) subjects[match(ids, id), EF])
+targets <- c("EF", "ESV", "EDV")
+yy <- setNames(lapply(targets, function(tg) lapply(ids_by, function(ids) subjects[match(ids, id)][[tg]])),
+               targets)
+y <- yy$EF
 
 # image features for baselines (in-mask pixels, gain-normalised, not centred)
 mvec <- as.vector(mask)
 frame_mat <- function(x) t(matrix(x, p * q))[, mvec, drop = FALSE]   # m x P
-interp11 <- function(x, ti) {
-  ph <- t_grid[ti]; X <- frame_mat(x)
-  apply(X, 2, function(col) approx(ph, col, xout = seq(0, 1, 0.1), rule = 2)$y)
+interp_weights <- function(ph, xout) {   # linear interpolation, constant beyond the ends
+  m <- length(ph); W <- matrix(0, length(xout), m)
+  if (m == 1L) { W[, 1L] <- 1; return(W) }
+  x <- pmin(pmax(xout, ph[1L]), ph[m])
+  j <- pmin(findInterval(x, ph), m - 1L)
+  w <- (x - ph[j]) / (ph[j + 1L] - ph[j])
+  W[cbind(seq_along(x), j)] <- 1 - w
+  W[cbind(seq_along(x), j + 1L)] <- W[cbind(seq_along(x), j + 1L)] + w
+  W
 }
+interp11 <- function(x, ti) interp_weights(t_grid[ti], seq(0, 1, 0.1)) %*% frame_mat(x)
 feat <- function(ids, kind) {
   t(vapply(ids, function(s) {
     x <- raw[[s]]; ti <- t_idx_all[[s]]
@@ -319,44 +351,49 @@ baseline_kinds <- c(
   "ES - ED difference image" = "diff",
   "Stacked dense video (11 phases)" = "stacked",
   "Stacked sparse video (linear interpolation, 11 phases)" = "stacked_sparse")
-log_message("EF prediction: MatFPCA scores and PCA baselines...")
+baseline_frames <- c(ed = "ED/ES landmarks", diff = "ED/ES landmarks", avg_sparse = "sparse",
+                     avg_dense = "dense", stacked = "dense", stacked_sparse = "sparse")
+
 ef_rows <- list(); preds <- list()
-for (w in c("sparse", "dense")) for (k in n_fpcs) {
-  r <- ridge_eval(scores[[w]]$TRAIN[, 1:k], y$TRAIN, scores[[w]]$VAL[, 1:k], y$VAL,
-                  scores[[w]]$TEST[, 1:k], y$TEST)
-  ef_rows[[length(ef_rows) + 1L]] <- data.table(
-    method = sprintf("MatFPCA scores (%s frames)", w), frames = w, k = k,
-    R2 = r$R2, MAE = r$MAE, AUC_EF40 = r$AUC_EF40, lambda = r$lambda)
-  if (k == max(n_fpcs)) preds[[paste("MatFPCA", w)]] <- r$pred
-}
-# MatFPCA as a sparse-to-full video predictor, followed by ordinary PCA of
-# the predicted videos (PCA in the full score space)
-pca_k <- unique(pmin(n_fpcs, length(ids_by$TRAIN) - 1L))
-k_show <- if (50L %in% pca_k) 50L else max(pca_k)   # k used in the scatter plot
-for (w in c("sparse", "dense")) for (k in pca_k) {
-  Z <- pca_scores(scores_full[[w]]$TRAIN, scores_full[[w]], k)
-  r <- ridge_eval(Z$TRAIN, y$TRAIN, Z$VAL, y$VAL, Z$TEST, y$TEST)
-  ef_rows[[length(ef_rows) + 1L]] <- data.table(
-    method = sprintf("MatFPCA predicted video -> PCA (%s frames)", w), frames = w, k = k,
-    R2 = r$R2, MAE = r$MAE, AUC_EF40 = r$AUC_EF40, lambda = r$lambda)
-  if (k == k_show) preds[[paste("MatFPCA video PCA", w)]] <- r$pred
-}
-for (nm in names(baseline_kinds)) {
-  F <- lapply(ids_by, feat, kind = baseline_kinds[[nm]])
-  for (k in pca_k) {
-    Z <- pca_scores(F$TRAIN, F, k)
-    r <- ridge_eval(Z$TRAIN, y$TRAIN, Z$VAL, y$VAL, Z$TEST, y$TEST)
-    ef_rows[[length(ef_rows) + 1L]] <- data.table(
-      method = paste("PCA:", nm),
-      frames = if (baseline_kinds[[nm]] == "avg_sparse") "sparse" else
-        if (baseline_kinds[[nm]] %in% c("ed", "diff")) "ED/ES landmarks" else "dense",
-      k = k, R2 = r$R2, MAE = r$MAE, AUC_EF40 = r$AUC_EF40, lambda = r$lambda)
-    if (k == k_show) preds[[nm]] <- r$pred
+evaluate <- function(method, frames_lab, Z) {
+  for (tg in targets) for (k in unique(pmin(n_fpcs, ncol(Z$TRAIN)))) {
+    yt <- yy[[tg]]
+    r <- ridge_eval(Z$TRAIN[, 1:k, drop = FALSE], yt$TRAIN, Z$VAL[, 1:k, drop = FALSE], yt$VAL,
+                    Z$TEST[, 1:k, drop = FALSE], yt$TEST)
+    ef_rows[[length(ef_rows) + 1L]] <<- data.table(
+      target = tg, method = method, frames = frames_lab, k = k, R2 = r$R2, MAE = r$MAE,
+      AUC_EF40 = if (tg == "EF") auc(yt$TEST < 40, -r$pred) else NA_real_,
+      lambda = r$lambda, val_rmse = r$val_rmse)
+    if (tg == "EF") preds[[method]][[as.character(k)]] <<- r$pred
   }
 }
-ef_table <- rbindlist(ef_rows)
+log_message("Prediction of EF / ESV / EDV: MatFPCA representations and PCA baselines...")
+static_cols <- prod_idx$l == 1L
+for (w in c("sparse", "dense")) {
+  evaluate(sprintf("MatFPCA product-FPC scores, top k (%s frames)", w), w, scores_full[[w]])
+  evaluate(sprintf("MatFPCA predicted video -> PCA (%s frames)", w), w,
+           pca_all(scores_full[[w]], max(n_fpcs)))
+}
+# the separable model splits each predicted video into a part carried by the
+# (near-constant) first temporal mode and a part carried by the dynamic modes
+evaluate("MatFPCA static part only (time mode 1) -> PCA (sparse frames)", "sparse",
+         pca_all(lapply(scores_full$sparse, function(S) S[, static_cols, drop = FALSE]), max(n_fpcs)))
+evaluate("MatFPCA dynamic part only (time modes 2+) -> PCA (sparse frames)", "sparse",
+         pca_all(lapply(scores_full$sparse, function(S) S[, !static_cols, drop = FALSE]), max(n_fpcs)))
+for (nm in names(baseline_kinds)) {
+  F <- lapply(ids_by, feat, kind = baseline_kinds[[nm]])
+  evaluate(paste("PCA:", nm), baseline_frames[[baseline_kinds[[nm]]]], pca_all(F, max(n_fpcs)))
+  rm(F); gc(verbose = FALSE)
+}
+ef_all <- rbindlist(ef_rows)
+fwrite(ef_all, file.path(args$output, "prediction_all_k.csv"))
+ef_table <- ef_all[target == "EF"]
 fwrite(ef_table, file.path(args$output, "ef_prediction.csv"))
-print(ef_table[, .(method, k, R2 = round(R2, 3), MAE = round(MAE, 2), AUC = round(AUC_EF40, 3))])
+# k chosen on VAL
+ef_sel <- ef_all[ef_all[, .I[which.min(val_rmse)], by = .(target, method)]$V1]
+fwrite(ef_sel, file.path(args$output, "prediction_selected_k.csv"))
+print(ef_sel[target == "EF", .(method, k, R2 = round(R2, 3), MAE = round(MAE, 2), AUC = round(AUC_EF40, 3))])
+sel_pred <- function(m) preds[[m]][[as.character(ef_sel[target == "EF" & method == m, k])]]
 
 # Spearman correlation of leading scores with EF, ESV, EDV (TRAIN, sparse)
 cor_tab <- rbindlist(lapply(1:10, function(f) {
@@ -418,6 +455,7 @@ print(rec_sum)
 # ---------------------------------------------------------------- figures ----
 to_img <- function(v) { z <- matrix(NA_real_, p, q); z[mvec] <- v; z }
 show <- function(z, zlim = range(z, na.rm = TRUE), col = gray.colors(128, 0, 1), main = "") {
+  z <- pmin(pmax(z, zlim[1]), zlim[2])            # clamp, so out-of-range pixels are not blank
   image(t(z)[, p:1], col = col, zlim = zlim, axes = FALSE, main = main, asp = 1, useRaster = TRUE)
 }
 div_col <- colorRampPalette(c("#2166ac", "#f7f7f7", "#b2182b"))(129)
@@ -468,47 +506,21 @@ for (f in 1:nprod) {
 }
 dev.off()
 
-# 4. leading "eigen-videos": PCs of the MatFPCA-predicted videos (sparse
-# frames), each a combination of many product FPCs. Shown as the deviation
-# from the mean video at five phases (+1 sd), with its correlation with EF.
-png(file.path(fig_dir, "video_pcs.png"), 1500, 1050, res = 110)
-Ftr <- scores_full$sparse$TRAIN
-vpc <- svd(sweep(Ftr, 2, colMeans(Ftr)), nu = 0, nv = 4)
-vz <- sweep(Ftr, 2, colMeans(Ftr)) %*% vpc$v
-n_full <- prod(ranks)
-par(mfrow = c(4, 6), mar = c(0.3, 0.3, 2.2, 0.3))
-for (pc in 1:4) {
-  full <- numeric(n_full); full[prod_col] <- vpc$v[, pc] * sd(vz[, pc])
-  dev_v <- rTensor::ttl(rTensor::as.tensor(array(full, ranks)),
-                        list(Phi, Psi, Theta[gi, , drop = FALSE]), ms = 1:3)@data
-  lim <- c(-1, 1) * max(abs(dev_v[rep(mask, length(gi))]))
-  rho <- cor(vz[, pc], y$TRAIN, method = "spearman")
-  for (g in seq_along(gi)) {
-    z <- dev_v[, , g]; z[!mask] <- NA
-    show(z, lim, div_col, sprintf("video PC%d, t = %.2f", pc, t_grid[gi[g]]))
-  }
-  dev_all <- rTensor::ttl(rTensor::as.tensor(array(full, ranks)),
-                          list(Phi, Psi, Theta), ms = 1:3)@data      # p x q x nt
-  amp <- apply(dev_all, 3, function(z) mean(abs(z[mask])))
-  share <- var(vz[, pc]) / sum(apply(Ftr, 2, var))
-  plot(t_grid, amp, type = "l", lwd = 2, col = "#1f3f8f", xlab = "", ylab = "",
-       axes = FALSE, ylim = c(0, max(amp)),
-       main = sprintf("rho(EF) %+.2f, %.1f%% var", rho, 100 * share))
-  mtext("mean |deviation| vs phase", side = 1, line = 0.2, cex = 0.7)
-  axis(1, at = c(0, 0.5, 1), labels = c("ED", "", "ES")); box()
-}
-dev.off()
-
-# 5. EF predicted vs true (TEST)
+# 5. EF predicted vs true (TEST), k chosen on VAL
 png(file.path(fig_dir, "ef_test_scatter.png"), 1800, 500, res = 110)
-show_p <- intersect(c("ED frame only (static)", "Stacked sparse video (linear interpolation, 11 phases)",
-                      "MatFPCA video PCA sparse", "Stacked dense video (11 phases)"), names(preds))
+show_p <- c("PCA: ED frame only (static)",
+            "PCA: Stacked sparse video (linear interpolation, 11 phases)",
+            "MatFPCA predicted video -> PCA (sparse frames)",
+            "PCA: Stacked dense video (11 phases)")
+show_lab <- c("ED frame (static)", "sparse frames, linear interpolation",
+              "MatFPCA video, sparse frames", "all frames (dense video)")
 par(mfrow = c(1, length(show_p)), mar = c(4, 4, 2.5, 1))
-for (nm in show_p) {
-  r2 <- 1 - sum((y$TEST - preds[[nm]])^2) / sum((y$TEST - mean(y$TEST))^2)
-  plot(y$TEST, preds[[nm]], pch = 16, cex = 0.5, col = adjustcolor("#1f3f8f", 0.4),
+for (i in seq_along(show_p)) {
+  pr <- sel_pred(show_p[i]); r <- ef_sel[target == "EF" & method == show_p[i]]
+  plot(y$TEST, pr, pch = 16, cex = 0.5, col = adjustcolor("#1f3f8f", 0.4),
        xlab = "true EF (%)", ylab = "predicted EF (%)", xlim = c(5, 95), ylim = c(5, 95),
-       main = sprintf("%s\nk = %d, R2 = %.2f", sub(" \\(linear.*", " (interp.)", nm), k_show, r2), cex.main = 0.9)
+       main = sprintf("%s\nk = %d (chosen on VAL), R2 = %.2f", show_lab[i], r$k, r$R2),
+       cex.main = 0.9)
   abline(0, 1, col = "grey50"); abline(v = 40, h = 40, lty = 3, col = "grey60")
 }
 dev.off()
@@ -528,20 +540,172 @@ for (s in names(rec_keep)) {
 }
 dev.off()
 
-# ---------------------------------------------------------------- summary ----
-best <- function(pattern, frames = NULL) {
-  d <- ef_table[grepl(pattern, method, fixed = TRUE)]
-  d[which.max(R2)]
+# --------------------------------------------------------- interpretation ----
+# What does each mode show?
+#  (a) spatial modes: leading row (top-bottom) and column (left-right)
+#      eigenvectors next to the mean ED image;
+#  (b) principal eigen-videos: PCA of the MatFPCA-predicted videos (all
+#      parts, and the dynamic part only), each shown as the mean video
+#      -/+ 2 SD at ED and ES, with Spearman correlations against clinical
+#      and acquisition variables (all splits, sparse frames);
+#  (c) EF groups: mean ED / ES images and systolic change for reduced
+#      (EF < 40%) and normal (EF >= 55%) TEST hearts, observed from all
+#      frames vs MatFPCA-predicted from the sparse frames.
+log_message("Interpretation outputs...")
+gray_col <- gray.colors(128, 0, 1)
+all_ids <- unlist(ids_by, use.names = FALSE)
+covars <- c(EF = "EF", EDV = "EDV", ESV = "ESV", gain = "norm_scale", LV_length = "axis_len",
+            LV_tilt = "axis_tilt", fps = "FPS", systole_s = "gap_s")
+cov_dt <- subjects[match(all_ids, id), ..covars]
+setnames(cov_dt, names(covars))
+score_video <- function(v, tt = seq_len(nt)) {     # product-score vector -> p x q x |tt|
+  full <- numeric(prod(ranks)); full[prod_col] <- v
+  rTensor::ttl(rTensor::as.tensor(array(full, ranks)),
+               list(Phi, Psi, Theta[tt, , drop = FALSE]), ms = 1:3)@data
 }
+ed_es <- c(1L, nt)
+
+# (a) spatial modes
+png(file.path(fig_dir, "spatial_modes.png"), 1300, 1000, res = 110)
+layout(matrix(c(1, 2, 3, 4), 2, 2, byrow = TRUE), widths = c(1, 0.8), heights = c(1, 0.8))
+par(mar = c(1, 1, 2.5, 1))
+show(to_img(mu[1, mvec]), main = "mean video at ED (t = 0)")
+pve_phi <- eig$values$lam_phi / sum(eig$values$lam_phi)
+pve_psi <- eig$values$lam_psi / sum(eig$values$lam_psi)
+par(mar = c(4, 4, 2.5, 1))
+matplot(Phi[, 1:4], seq_len(p), type = "l", lty = 1, lwd = 2, col = cols, ylim = c(p, 1),
+        xlab = "loading", ylab = "image row (top = apex, bottom = atria)",
+        main = "row eigenvectors phi_j (vertical profiles)")
+abline(v = 0, col = "grey70")
+legend("bottomright", sprintf("j = %d (%.1f%%)", 1:4, 100 * pve_phi[1:4]), col = cols, lwd = 2,
+       bty = "n", cex = 0.8)
+matplot(seq_len(q), Psi[, 1:4], type = "l", lty = 1, lwd = 2, col = cols,
+        xlab = "image column (left = septum / right ventricle, right = lateral wall)",
+        ylab = "loading", main = "column eigenvectors psi_k (horizontal profiles)")
+abline(h = 0, col = "grey70")
+legend("topright", sprintf("k = %d (%.1f%%)", 1:4, 100 * pve_psi[1:4]), col = cols, lwd = 2,
+       bty = "n", cex = 0.8)
+par(mar = c(4, 4, 2.5, 1))
+plot(cumsum(pve_phi)[1:min(30, length(pve_phi))], type = "b", pch = 16, cex = 0.6, col = "#1f3f8f",
+     ylim = c(0, 1), xlab = "number of spatial components", ylab = "cumulative share",
+     main = "spatial eigenvalues are spread out")
+lines(cumsum(pve_psi)[1:min(30, length(pve_psi))], type = "b", pch = 16, cex = 0.6, col = "#d95f02")
+legend("bottomright", c("rows (U)", "columns (V)"), col = c("#1f3f8f", "#d95f02"), lwd = 2, bty = "n")
+dev.off()
+
+# (b) principal eigen-videos
+eigen_videos <- function(cols_use, npc) {
+  Ftr <- scores_full$sparse$TRAIN[, cols_use, drop = FALSE]
+  m <- colMeans(Ftr)
+  sv <- svd(sweep(Ftr, 2, m), nu = 0, nv = npc)
+  tot <- sum(apply(scores_full$sparse$TRAIN, 2, var))       # total predicted-video variance
+  Zall <- sweep(do.call(rbind, scores_full$sparse)[, cols_use, drop = FALSE], 2, m) %*% sv$v
+  lapply(seq_len(npc), function(j) {
+    v <- numeric(ncol(scores_full$sparse$TRAIN)); v[which(cols_use)] <- sv$v[, j]
+    sdj <- sd(Zall[seq_along(ids_by$TRAIN), j])
+    # orient so that +2 SD corresponds to higher EF (purely cosmetic)
+    sgn <- if (cor(Zall[, j], cov_dt$EF) < 0) -1 else 1
+    vid <- score_video(sgn * v * sdj)
+    dyn <- sum(sweep(vid, 1:2, apply(vid, 1:2, mean))^2) / sum(vid^2)
+    list(z = sgn * Zall[, j], vid = vid, share = sdj^2 / tot, dyn = dyn)
+  })
+}
+npc <- 6L
+ev <- list(all = eigen_videos(rep(TRUE, length(prod_col)), npc),
+           dynamic = eigen_videos(!static_cols, npc))
+interp_tab <- rbindlist(lapply(names(ev), function(part) rbindlist(lapply(seq_len(npc), function(j) {
+  e <- ev[[part]][[j]]
+  rho <- vapply(cov_dt, function(v) cor(e$z, v, method = "spearman", use = "complete.obs"), 1)
+  data.table(part = part, pc = j, variance_share = e$share, time_varying_share = e$dyn,
+             as.data.table(as.list(setNames(rho, paste0("rho_", names(rho))))))
+}))))
+fwrite(interp_tab, file.path(args$output, "eigen_video_interpretation.csv"))
+print(interp_tab[, lapply(.SD, function(v) if (is.numeric(v)) round(v, 2) else v)])
+
+top_corr <- function(r) {
+  rr <- unlist(r[, grep("^rho_", names(r)), with = FALSE])
+  o <- order(-abs(rr))[1:3]
+  paste(sprintf("%s %+.2f", sub("rho_", "", names(rr)[o]), rr[o]), collapse = ", ")
+}
+for (pt in names(ev)) {
+  png(file.path(fig_dir, sprintf("eigen_videos_%s.png", pt)), 1700, 300 * npc, res = 110)
+  par(mfrow = c(npc, 7), mar = c(0.3, 0.3, 2.4, 0.3), oma = c(0, 0, 2, 0))
+  for (j in seq_len(npc)) {
+    e <- ev[[pt]][[j]]
+    lim_g <- range(mu[ed_es, mvec])
+    for (g in ed_es) for (sg in c(-2, 2)) {
+      z <- mu_arr[, , g] + sg * e$vid[, , g]; z[!mask] <- NA
+      show(z, lim_g, gray_col, sprintf("PC%d %s2 SD, %s", j, if (sg < 0) "-" else "+",
+                                       if (g == 1L) "ED" else "ES"))
+    }
+    dl <- c(-1, 1) * max(abs(e$vid[rep(mask, nt)]))
+    for (g in ed_es) { z <- e$vid[, , g]; z[!mask] <- NA
+      show(z, dl, div_col, sprintf("PC%d deviation at %s", j, if (g == 1L) "ED" else "ES")) }
+    plot.new()
+    r <- interp_tab[part == pt & pc == j]
+    text(0, 0.8, sprintf("PC%d: %.1f%% of variance", j, 100 * r$variance_share), adj = 0, cex = 0.95)
+    text(0, 0.6, sprintf("time-varying: %.0f%%", 100 * r$time_varying_share), adj = 0, cex = 0.95)
+    text(0, 0.4, "strongest correlates:", adj = 0, cex = 0.85)
+    text(0, 0.25, top_corr(r), adj = 0, cex = 0.8)
+  }
+  mtext(sprintf("Principal eigen-videos of the MatFPCA-predicted videos (%s); +2 SD = higher-EF side",
+                if (pt == "all") "all parts" else "dynamic part only: time modes 2+"),
+        outer = TRUE, cex = 1)
+  dev.off()
+}
+
+# (c) EF groups (TEST): observed from all frames vs MatFPCA from sparse frames
+grp <- cut(y$TEST, c(-Inf, 40, 55, Inf), right = FALSE, labels = c("reduced", "borderline", "normal"))
+obs_edes <- lapply(c(ED = "ed", ES = "es"), function(w) t(vapply(ids_by$TEST, function(s) {
+  x <- raw[[s]]; frame_mat(x[, , if (w == "ed") 1L else dim(x)[3], drop = FALSE])[1, ] }, numeric(sum(mvec)))))
+gm <- list(obs = list(), pred = list())
+for (g in c("reduced", "normal")) {
+  gm$obs[[g]] <- lapply(obs_edes, function(M) colMeans(M[grp == g, , drop = FALSE]))
+  vid <- score_video(colMeans(scores_full$sparse$TEST[grp == g, , drop = FALSE]), ed_es)
+  gm$pred[[g]] <- list(ED = vid[, , 1][mvec] + mu[1, mvec], ES = vid[, , 2][mvec] + mu[nt, mvec])
+}
+chg <- function(src, g) gm[[src]][[g]]$ES - gm[[src]][[g]]$ED
+png(file.path(fig_dir, "ef_groups.png"), 1700, 560, res = 110)
+par(mfrow = c(2, 7), mar = c(0.3, 0.3, 2.4, 0.3), oma = c(0, 3, 2, 0))
+lim_g <- range(unlist(gm$obs))
+cl <- c(-1, 1) * max(abs(c(chg("obs", "reduced"), chg("obs", "normal"))))
+cd <- c(-1, 1) * max(abs(chg("obs", "reduced") - chg("obs", "normal")))
+agree <- cor(chg("obs", "reduced") - chg("obs", "normal"),
+             chg("pred", "reduced") - chg("pred", "normal"))
+for (src in c("obs", "pred")) {
+  for (g in c("reduced", "normal")) for (ph in c("ED", "ES"))
+    show(to_img(gm[[src]][[g]][[ph]]), lim_g, gray_col,
+         sprintf("%s EF, %s (n=%d)", g, ph, sum(grp == g)))
+  show(to_img(chg(src, "reduced")), cl, div_col, "ES - ED, reduced EF")
+  show(to_img(chg(src, "normal")), cl, div_col, "ES - ED, normal EF")
+  show(to_img(chg(src, "reduced") - chg(src, "normal")), cd, div_col, "change: reduced - normal")
+  mtext(if (src == "obs") "observed\n(all frames)" else "MatFPCA\n(3-8 frames)",
+        side = 2, outer = TRUE, at = if (src == "obs") 0.75 else 0.25, line = 0.5, cex = 0.8)
+}
+mtext(sprintf("TEST hearts by EF group: reduced EF < 40%%, normal EF >= 55%%; correlation of the two 'reduced - normal' change maps = %.2f",
+              agree), outer = TRUE, cex = 0.95)
+dev.off()
+writeLines(sprintf("%.4f", agree), file.path(args$output, "ef_group_change_agreement.txt"))
+
+# ---------------------------------------------------------------- summary ----
+sel <- function(m) ef_sel[target == "EF" & method == m]
 summary_lines <- c(
   sprintf("design: %s | train subjects: %d | train frames: %d | image %dx%d | mask %d px",
           args$design, length(train_ids), sum(lengths(train_pos)), p, q, sum(mask)),
   sprintf("fit time: %.0f s | ranks I x J x K = %s | sigma2 = %.4g",
           fit$elapsed, paste(ranks, collapse = " x "), C$sig2),
   sprintf("temporal variance in dynamic modes: %.1f%%  (go if >= 10%%)", 100 * dyn_share),
-  sprintf("EF TEST R2, MatFPCA sparse frames (best k): %.3f", best("MatFPCA scores (sparse")$R2),
-  sprintf("EF TEST R2, MatFPCA dense frames (best k):  %.3f", best("MatFPCA scores (dense")$R2),
-  sprintf("EF TEST R2, static ED-frame PCA (best k):   %.3f", best("ED frame only")$R2),
+  sprintf("EF TEST R2 (k on VAL), MatFPCA video PCA, sparse frames: %.3f (k = %d)",
+          sel("MatFPCA predicted video -> PCA (sparse frames)")$R2, sel("MatFPCA predicted video -> PCA (sparse frames)")$k),
+  sprintf("EF TEST R2 (k on VAL), MatFPCA video PCA, dense frames:  %.3f (k = %d)",
+          sel("MatFPCA predicted video -> PCA (dense frames)")$R2, sel("MatFPCA predicted video -> PCA (dense frames)")$k),
+  sprintf("EF TEST R2 (k on VAL), sparse interpolation PCA:         %.3f",
+          sel("PCA: Stacked sparse video (linear interpolation, 11 phases)")$R2),
+  sprintf("EF TEST R2 (k on VAL), static ED-frame PCA:              %.3f",
+          sel("PCA: ED frame only (static)")$R2),
+  sprintf("held-out frame RMSE, MatFPCA / mean + static PCA: %.3f / %.3f",
+          rec_sum[frames == "held-out" & method == "MatFPCA", rmse],
+          rec_sum[frames == "held-out" & method == "Mean + static PCA (20)", rmse]),
   sprintf("score implementation check (relative diff): %.2g", score_check))
 writeLines(summary_lines, file.path(args$output, "run_summary.txt"))
 cat(summary_lines, sep = "\n")

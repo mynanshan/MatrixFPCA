@@ -4,8 +4,11 @@ Status (2026-11-23): preprocessing, Phase-0 checks, RDS conversion and the
 pilot fits (56 × 56, n = 500, sparse and dense) are done; all go/no-go checks
 pass (see `README.md`). Pilot lesson: use PCA of the MatFPCA-predicted video
 (full score tensor) as the EF representation, not the top product-FPC
-scores, which are individually tiny (rank-one eigenimages). Next: main fits
-at 112 × 112, n = 2,000. The whole pipeline runs on the cluster (Compute
+scores, which are individually tiny (rank-one eigenimages). Main fits run
+at 112 × 112 with n = 500 TRAIN subjects (decision 2026-11-23: MatFPCA should
+need few subjects when the images are rich; the sample is stratified by EF
+quintile × image-appearance cluster and checked for representativeness, and a
+56 × 56 sample-size study, n = 250…2,000, checks that 500 is enough). The whole pipeline runs on the cluster (Compute
 Canada, R 4.5.0, same conventions as `application/olives/run_retfound.sbatch`).
 
 ## 0. Why this dataset
@@ -148,8 +151,11 @@ peak correlation < 0.8) and exclude those videos from this variant.
 
 ### 2.4 Subjects
 
-- **Training:** 2,000 eligible videos sampled from TRAIN (fixed seed;
-  optionally stratified by EF decile so low-EF hearts are represented).
+- **Training:** 500 eligible TRAIN videos (was 2,000). They are the first 500
+  in a systematic stratified random ranking (EF quintile × 8 appearance
+  clusters), so every kind of heart and image is represented in proportion;
+  any prefix of the ranking is itself a stratified sample, which the
+  sample-size study uses.
 - **Test:** all eligible TEST videos (about 1,250), used for held-out score
   prediction, reconstruction and EF evaluation. Leave VAL unused, or use it
   for tuning (for example, the ridge penalty in the EF prediction).
